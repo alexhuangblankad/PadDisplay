@@ -455,6 +455,22 @@ class SystemDisplayService(
     }
 
     /**
+     * 读外接屏真实的 windowingMode（"扩展/复制"的权威判据）。
+     *
+     * 审计 F15：不要拿"内外屏尺寸相同"去猜镜像 —— 外屏恰好和内屏同分辨率时会被误判。
+     * 这里直接读 UserService 输出的 `windowingMode: FULLSCREEN(1)` 里的数字。
+     * 需要 Shizuku；读不到返回 null。
+     */
+    suspend fun externalWindowingMode(externalDisplayId: Int): Int? = withContext(Dispatchers.IO) {
+        val svc = service() ?: return@withContext null
+        runCatching {
+            val text = svc.getDisplayModeState(externalDisplayId)
+            Regex("""windowingMode:\s*\w+\((\d+)\)""")
+                .find(text)?.groupValues?.get(1)?.toIntOrNull()
+        }.getOrNull()
+    }
+
+    /**
      * 当前外接屏是否处于镜像（复制）状态。
      *
      * 判据：外接屏与内屏的**逻辑尺寸完全相同**且两者都开启，

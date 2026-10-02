@@ -205,6 +205,50 @@ class AudioRoutingController(
         }.getOrDefault("(读取失败)")
     }
 
+    /**
+     * 当前音频路由快照，用来判断「显示器是不是把声音抢走了」。
+     *
+     * 这个判断直接对应实测到的现象：**Android 把 USB-C/DP 显示器当作有线耳机**，
+     * 一线连之后媒体音频就跑到显示器上，平板扬声器/蓝牙耳机没声了。
+     */
+    data class RoutingSnapshot(
+        val current: AudioOutput?,
+        /** 当前媒体输出是不是"显示器类"设备（= 声音被显示器抢走了） */
+        val stolenByDisplay: Boolean,
+        /** 建议切回的设备（优先蓝牙/有线耳机，其次内置扬声器） */
+        val suggested: AudioOutput?,
+    )
+
+    /** 采集当前路由快照。 */
+    fun routingSnapshot(): RoutingSnapshot {
+        val outputs = availableOutputs()
+        val am = audioManager()
+        val currentId = currentMediaOutput()?.id
+        val current = outputs.firstOrNull { it.id == currentId }
+
+        // 显示器类，或者类型是 USB/有线耳机但实际上就是显示器
+        // （实测：ColorOS 把 DP 显示器报成耳机类设备）
+        val stolen = current != null && current.isDisplayLike
+
+        val suggested = outputs.firstOrNull { !it.isDisplayLike && isHeadset(it.type) }
+            ?: outputs.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            ?: outputs.firstOrNull { !it.isDisplayLike }
+
+        return RoutingSnapshot(current = current, stolenByDisplay = stolen, suggested = suggested)
+    }
+
+    /** 该设备类型是否属于"耳机类"（音频保护会优先选它）。 */
+    fun isHeadset(type: Int): Boolean = when (type) {
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_USB_HEADSET,
+        -> true
+        else -> false
+    }
+
     // ------------------------------------------------------------------
     // 通道 1：反射 AudioManager（首选）
     // ------------------------------------------------------------------

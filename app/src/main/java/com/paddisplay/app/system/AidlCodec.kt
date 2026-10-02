@@ -111,12 +111,20 @@ object AidlCodec {
             return fail(label, IllegalStateException("binder 为空"))
         }
 
-        // 身份校验：防止把 display 服务当成 window 服务，或拿到错误的 binder
-        val actual = runCatching { binder.interfaceDescriptor }.getOrNull()
-        if (actual != null && actual != descriptor) {
+        // 身份校验：防止把 display 服务当成 window 服务，或拿到错误的 binder。
+        //
+        // 审计 F12：早先在 `interfaceDescriptor` 抛异常时会**跳过校验继续调用**，
+        // 那等于在最危险的情况下放弃唯一的防线。现在读取失败一律判失败，
+        // 宁可报"取不到接口描述符"也不盲发 transact。
+        val actual = try {
+            binder.interfaceDescriptor
+        } catch (t: Throwable) {
+            return fail(label, IllegalStateException("无法读取 binder 描述符，拒绝调用: ${Reflect.describe(t)}"))
+        }
+        if (actual != descriptor) {
             return fail(
                 label,
-                IllegalStateException("binder 描述符不匹配：期望 $descriptor，实际 $actual"),
+                IllegalStateException("binder 描述符不匹配：期望 $descriptor，实际 ${actual ?: "(null)"}"),
             )
         }
 

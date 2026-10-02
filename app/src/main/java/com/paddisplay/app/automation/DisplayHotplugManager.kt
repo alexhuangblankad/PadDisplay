@@ -141,7 +141,7 @@ class DisplayHotplugManager(
 
         val preferredId = settings.preferredAudioDeviceId.first()
         val chosen = outputs.firstOrNull { it.id == preferredId && !it.isDisplayLike }
-            ?: outputs.firstOrNull { !it.isDisplayLike && isHeadset(it.type) }
+            ?: outputs.firstOrNull { !it.isDisplayLike && systemService.audio.isHeadset(it.type) }
             ?: outputs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
             ?: outputs.firstOrNull { !it.isDisplayLike }
 
@@ -169,29 +169,25 @@ class DisplayHotplugManager(
         log("音频保护结果：${r.toText().replace("\n", " / ")}")
     }
 
-    private fun isHeadset(type: Int): Boolean = when (type) {
-        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
-        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-        android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
-        android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER,
-        android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
-        android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
-        -> true
-        else -> false
-    }
-
     /** 供 UI 手动触发音频保护。 */
     suspend fun applyAudioProtectionNow(): String {
         applyAudioProtection()
         return "已尝试把音频输出切回平板侧设备，详见事件日志"
     }
 
-    private suspend fun refreshExternalFlag() {
-        // 枚举会走反射 + Binder，放到 IO 线程，避免卡主线程
-        val displays = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+    /**
+     * 枚举显示器的统一入口。
+     *
+     * 枚举内部会走隐藏 API 反射 + Binder 调用，**必须在 IO 线程执行**，
+     * 否则会在主线程上做同步 Binder（ANR / StrictMode 风险）。
+     */
+    private suspend fun enumerateOnIo(): List<DisplaySnapshot> =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             systemService.enumerateDisplays(currentRoleOverrides())
         }
+    private suspend fun refreshExternalFlag() {
+        // 枚举会走反射 + Binder，放到 IO 线程，避免卡主线程
+        val displays = enumerateOnIo()
         val ext = displays.any { it.isExternal }
         if (_externalConnected.value != ext) {
             _externalConnected.value = ext
@@ -209,7 +205,10 @@ class DisplayHotplugManager(
         delay(HOTPLUG_SETTLE_MS)
 
         // 2) 重新枚举，确认这是一块外接屏且仍然存在
-        val displays = systemService.enumerateDisplays(currentRoleOverrides())
+        // （枚举走反射 + Binder，放 IO 线程 —— 审计 F11）
+        val displays = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            systemService.enumerateDisplays(currentRoleOverrides())
+        }
         val target = displays.firstOrNull { it.displayId == displayId && it.isExternal }
             ?: displays.firstOrNull { it.isExternal }
             ?: run {
@@ -243,7 +242,7 @@ class DisplayHotplugManager(
                 log(result.toText().replace("\n", " / "))
 
                 // 4) 确认外屏仍然存在
-                val stillThere = systemService.enumerateDisplays(currentRoleOverrides())
+                val stillThere = enumerateOnIo()
                     .any { it.displayId == target.displayId }
                 if (!stillThere) {
                     log("⚠️ 切换后外接屏消失，判定为不兼容模式，尝试回滚")
@@ -274,7 +273,7 @@ class DisplayHotplugManager(
     // ------------------------------------------------------------------
 
     private suspend fun handleDisplayRemoved(displayId: Int) {
-        val displays = systemService.enumerateDisplays(currentRoleOverrides())
+        val displays = enumerateOnIo()
         val anyExternal = displays.any { it.isExternal }
 
         if (!anyExternal) _externalConnected.value = false
@@ -334,5 +333,5 @@ class DisplayHotplugManager(
 
     /** 给 UI 用的外屏快照。 */
     suspend fun currentExternal(): DisplaySnapshot? =
-        systemService.enumerateDisplays(currentRoleOverrides()).firstOrNull { it.isExternal }
+        enumerateOnIo().firstOrNull { it.isExternal }
 }

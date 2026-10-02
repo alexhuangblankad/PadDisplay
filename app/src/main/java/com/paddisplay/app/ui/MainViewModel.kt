@@ -59,6 +59,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val selectedAudioDeviceId: Int? = null,
         val currentMediaOutput: String = "(读不到)",
         val currentCommOutput: String = "(读不到)",
+        /** 声音是否正被「显示器类」设备抢走（实测 ColorOS 把显示器报成耳机） */
+        val audioStolenByDisplay: Boolean = false,
+        /** 被抢走时建议切回的设备 */
+        val suggestedAudioDevice: AudioRoutingController.AudioOutput? = null,
         // ---------------- 显示模式 ----------------
         val displayMode: DisplayMode = DisplayMode.UNKNOWN,
         val displayModeDetail: String = "",
@@ -204,8 +208,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ------------------------------------------------------------------
 
     fun refreshDisplays() {
-        viewModelScope.launch {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val overrides = settings.roleOverrides.first()
+            // 枚举会走反射 + Binder，放 IO 线程（审计 F11）
             val displays = systemService.enumerateDisplays(overrides)
             _ui.value = _ui.value.copy(
                 displays = displays,
@@ -224,6 +229,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshAudio() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val outputs = systemService.audio.availableOutputs()
+            val snapshot = systemService.audio.routingSnapshot()
             val media = systemService.audio.currentMediaOutput()
             val comm = systemService.audio.currentCommunicationOutput()
             val mediaLabel = media?.let { "${AudioRoutingController.typeLabel(it.type)}" } ?: "(读不到)"
@@ -231,12 +237,61 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 audioOutputs = outputs,
                 currentMediaOutput = mediaLabel,
                 currentCommOutput = comm,
+                audioStolenByDisplay = snapshot.stolenByDisplay,
+                suggestedAudioDevice = snapshot.suggested,
                 // 默认选中「当前媒体输出」，方便直接把声音钉回耳机
                 selectedAudioDeviceId = _ui.value.selectedAudioDeviceId
                     ?: outputs.firstOrNull { it.isCurrentMedia }?.id
                     ?: outputs.firstOrNull { !it.isDisplayLike }?.id,
             )
             appendLog("音频输出：当前媒体=$mediaLabel，通话=$comm，可选设备 ${outputs.size} 个")
+            if (snapshot.stolenByDisplay) {
+                appendLog(
+                    "⚠️ 检测到声音正被显示器类设备「${snapshot.current?.displayName}」占用" +
+                        (snapshot.suggested?.let { "，建议切到「${it.displayName}」" } ?: ""),
+                )
+            }
+        }
+    }
+
+    /**
+     * 一键把声音从显示器拉回平板侧（蓝牙/有线耳机，其次内置扬声器）。
+     *
+     * 这是实测确认的痛点：Android 把 USB-C/DP 显示器当音频输出设备，
+     * 一线连之后耳机就没声了。系统自带媒体输出切换能修，但要点好几层；
+     * 这里用一个按钮直接修好。
+     */
+    fun fixAudioStolenByDisplay() {
+        viewModelScope.launch {
+            val target = _ui.value.suggestedAudioDevice
+                ?: _ui.value.audioOutputs.firstOrNull { !it.isDisplayLike }
+            if (target == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 找不到可以切回的输出设备")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true, selectedAudioDeviceId = target.id)
+            val r = systemService.setAudioOutputDevice(target.id, pinMedia = true, pinComm = false)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("把声音从显示器切到「${target.displayName}」：${r.toText().replace("\n", " / ")}")
+            // 记住这个选择，下次接入外屏时优先用它
+            settings.setPreferredAudioDeviceId(target.id)
+            delay(700)
+            refreshAudio()
+        }
+    }
+
+    /** 打开系统「声音」设置页（系统媒体输出切换器在这里）。 */
+    fun openSystemSoundSettings(context: android.content.Context) {
+        runCatching {
+            val intent = android.content.Intent(android.provider.Settings.ACTION_SOUND_SETTINGS)
+                .addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            appendLog("已打开系统声音设置（可在其中切换媒体输出设备）")
+        }.onFailure {
+            appendLog("打开系统声音设置失败：${it.message}")
+            _ui.value = _ui.value.copy(
+                lastResult = "无法打开系统声音设置，请手动下拉通知栏 → 点「媒体输出」切换",
+            )
         }
     }
 
@@ -295,9 +350,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             val detail = systemService.displayModeState(external.displayId)
+            // 审计 F15：优先用**真实的 windowingMode** 判定，而不是拿"内外屏尺寸相同"
+            // 去猜镜像（外屏恰好和内屏同分辨率时会被误判成复制）。
+            val realWindowingMode = systemService.externalWindowingMode(external.displayId)
             val mode = when {
                 _ui.value.internalTurnedOff -> DisplayMode.EXTERNAL_ONLY
-                systemService.looksMirrored() -> DisplayMode.MIRROR
+                realWindowingMode == com.paddisplay.app.system.DisplayMirrorController.WINDOWING_MODE_FULLSCREEN ->
+                    DisplayMode.EXTEND
+                // 读不到 windowingMode 时，才退回尺寸启发式
+                realWindowingMode == null && systemService.looksMirrored() -> DisplayMode.MIRROR
+                realWindowingMode == null -> DisplayMode.EXTEND
                 else -> DisplayMode.EXTEND
             }
             _ui.value = _ui.value.copy(displayMode = mode, displayModeDetail = detail)

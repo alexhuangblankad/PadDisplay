@@ -429,6 +429,7 @@ private fun DisplayModeCard(
 @Composable
 private fun AudioOutputCard(vm: MainViewModel, ui: MainViewModel.UiState) {
     val protect by vm.preferInternalAudio.collectAsState(initial = true)
+    val context = LocalContext.current
 
     Card(
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -446,6 +447,50 @@ private fun AudioOutputCard(vm: MainViewModel, ui: MainViewModel.UiState) {
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+
+            // ---------------- 声音被显示器抢走：直接给出修复入口 ----------------
+            if (ui.audioStolenByDisplay) {
+                Spacer(Modifier.height(10.dp))
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.35f),
+                    ),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(Modifier.padding(12.dp)) {
+                        Text(
+                            "检测到声音正被显示器占用",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "Android 会把 USB-C / DP 显示器当成音频输出设备" +
+                                "（实测 ColorOS 把它报成「有线耳机」），" +
+                                "所以一线连之后耳机/扬声器就没声了。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { vm.fixAudioStolenByDisplay() },
+                                enabled = !ui.busy,
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(
+                                    ui.suggestedAudioDevice?.let { "切到 ${it.typeName}" } ?: "切回平板侧",
+                                )
+                            }
+                            OutlinedButton(
+                                onClick = { vm.openSystemSoundSettings(context) },
+                                enabled = !ui.busy,
+                            ) { Text("系统设置") }
+                        }
+                    }
+                }
+            }
+
             Spacer(Modifier.height(10.dp))
 
             if (ui.audioOutputs.isEmpty()) {
@@ -496,9 +541,9 @@ private fun AudioOutputCard(vm: MainViewModel, ui: MainViewModel.UiState) {
             }
             Spacer(Modifier.height(4.dp))
             Text(
-                "「设为音频输出」会用 Shizuku 把系统「媒体」音频固定到所选设备，" +
-                    "这样即使连着显示器，声音也留在你的耳机 / 平板扬声器。" +
-                    "「恢复自动」会清除该固定，交回系统决定。",
+                "「设为音频输出」会把系统「媒体」音频固定到所选设备，一线连也能让声音留在耳机/扬声器。" +
+                    "系统自带的媒体输出切换器（下拉通知栏 → 媒体输出）同样有效，" +
+                    "但那是系统行为，本应用只是把它变成一键。",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -513,10 +558,10 @@ private fun AudioOutputCard(vm: MainViewModel, ui: MainViewModel.UiState) {
                 onChange = { vm.setPreferInternalAudio(it) },
             )
             OutlinedButton(
-                onClick = { vm.applyAudioOutput(pinMedia = true) },
-                enabled = !ui.busy && ui.selectedAudioDeviceId != null,
+                onClick = { vm.refreshAudio() },
+                enabled = !ui.busy,
                 modifier = Modifier.fillMaxWidth(),
-            ) { Text("立即把声音切回所选设备") }
+            ) { Text("刷新音频状态") }
         }
     }
 }

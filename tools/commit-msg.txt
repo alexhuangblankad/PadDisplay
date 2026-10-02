@@ -1,69 +1,42 @@
-v0.1.2: 修复音频设备标识错误（蓝牙/显示器路线必然失败）与多处假成功
+v0.1.5: 新图标 + 自动检测显示器抢音频并一键修复
 
-## CRITICAL 修复
+## 新图标
 
-### 1. 音频设备标识用错构造器 —— 蓝牙耳机路线此前必然失败
+- 换成用户提供的图（白发猫耳少女 + 平板 + 显示器）
+- 按自适应图标规范生成：前景 432x432（内容占中心安全区），
+  背景色取原图圆角外侧底色 (#FDFDFD)，覆盖 mdpi~xxxhdpi 全部密度的
+  ic_launcher / ic_launcher_round
+- 透明只来自圆角遮罩，不做任何按颜色抠图
+  （第一版用"背景色→透明"把图像内部的白点也抠穿了，已修正）
 
-AudioDeviceAttributes(int type, String address) 的第一个参数是**原生设备类型**
-（DEVICE_OUT_*），不是 SDK 的 AudioDeviceInfo.TYPE_*。传 SDK 类型会被映射错：
+## 音频：从手动切升级为自动检测 + 一键修复
 
-- 内置扬声器(2) 碰巧对上 → 能成功
-- 蓝牙 A2DP(8) 撞上 DEVICE_OUT_WIRED_HEADPHONE → 变成"有线耳机带蓝牙 MAC"
-- HDMI(9) / USB(11) → TYPE_UNKNOWN → 被 areAllDevicesSupported() 拒绝
+实测确认的两条信息：
+1. 系统的媒体输出切换器可以切回来，切回就好了
+2. ColorOS 把一线连的显示器当成「有线耳机」
 
-后果：核心需求「一线连显示器时声音留给蓝牙耳机」根本不可能生效，
-只有钉内置扬声器能成。现在改用 AudioDeviceAttributes(AudioDeviceInfo)
-这个 @SystemApi 构造器，由 framework 填对 role / type / address / name / nativeType。
+于是做了：
+- 自动检测：当前媒体音频是否正走在「显示器类」设备上（= 声音被抢走）
+- 命中时音频卡片顶部弹出醒目警告，并给出一键修复按钮
+  （优先切回蓝牙/有线耳机，其次平板内置扬声器），
+  外加「系统设置」按钮直达系统声音页
+- 修复成功后记住该设备，下次接入外屏自动优先使用
+- 事件日志会明确写出「检测到声音正被显示器类设备 X 占用，建议切到 Y」
 
-### 2. 「扩展模式」永远报告成功
+## 其它修复（独立审计的剩余项）
 
-applyExtendMode 里塞了一条信息性输出 Report(true, "当前 windowingMode", …)，
-上层用 contains("✅") 判成功时永远为真 —— 即使真正要做的 setWindowingMode
-完全没生效，界面也会说"已切换到扩展模式"。
-现在把信息性输出与结果判定彻底分开，只用机器可判定的 RESULT_OK= 标记决定成败。
-
-### 3. 音频策略匹配与列表读取
-
-- AudioProductStrategy 里没有 AUDIO_STRATEGY_MEDIA 这个 Java 常量
-  （媒体策略 id 是 ROM audio policy 配置里的序号）。
-  改为按 getName() == "STRATEGY_MEDIA" 匹配，再用 supportsAudioAttributes() 兜底。
-- 列表读取格式修正：AOSP writeTypedList 是 [count] + count × [1][payload]，
-  原先多读一个 present 标记，导致 N>=2 时静默截断为第一个元素
-  （这正是上面策略匹配失效的原因）。
-
-## 结构性改进
-
-音频主通道改为反射 AudioManager 的隐藏方法，不再手搓 transaction：
-- 首选：反射 AudioManager.set/get/removePreferredDevicesForStrategy
-  + AudioProductStrategy.getAudioProductStrategies()
-- 兜底：手搓 IAudioService transaction
-- 公共：AudioManager.setCommunicationDevice()（只能影响通话音）
-
-手搓 transaction 要同时赌对「方法序号 / Parcel 编组 / 列表格式」三件事，
-任一错都静默失效；直接调用 framework 自己的方法把这三件事交回 AOSP 保证。
-
-## 其它修复
-
-- 消除假成功判定：显示器侧与音频侧全部改用 RESULT_OK= 标记，
-  不再依赖 ✅ 或「结果: 成功」子串。
-- 音频自愈加重试：原来只在启动后 2.5 秒试一次，而 Shizuku 授权通常发生在
-  启动之后，等于永远没清。现在循环等 Shizuku 就绪（最多 12 次），
-  并在每一次 UserService 连接建立时都清一次。
-- 清除操作不再无条件返回成功：由读回验证决定。
-- 媒体目标只动媒体：不再在媒体失败时偷偷改通话音频。
-- isDisplayLike 不再误判 USB 耳机：USB-C 转 3.5mm / USB 耳麦现在能被正确选中。
-- 主线程 Binder 调用移出主线程（音频设备枚举）。
-- 删除两个写错且未使用的 IAudioService comm-device code。
-
-## 关于 transaction code 的诚实说明
-
-IAudioService 兜底通道的 API 35 值：本项目用真实编译器得到
-setPreferredDevicesForStrategy = 144，独立审计（文本解析）得到 145。
-目标设备是 API 36（ColorOS 16），该版本两者一致（153）且已逐条验证。
-本项目手工核对过 AIDL 方法名抽取：276 个方法名、无重复、无嵌套 interface。
-API 35 分支属兜底路径且有读回验证兜住，不会造成静默错误。
-tools/verify-aidl-codes.ps1 可随时复核。
+- binder 身份校验不再被绕过：原来 interfaceDescriptor 读取抛异常时会
+  跳过校验继续调用，等于在最危险的情况下放弃唯一防线。现在读取失败一律判失败。
+- 镜像判定改用真实 windowingMode，不再拿"内外屏尺寸相同"去猜
+  （外屏恰好与内屏同分辨率时会被误判成复制）。
+- 显示器枚举全部移出主线程（原来在主线程做同步 Binder，有 ANR 风险）。
 
 ## 安装
 
-下载下方 APK 直接安装（覆盖升级即可，签名不变）。
+下载下方 APK 直接安装（覆盖升级，签名不变）。
+
+装好后建议：
+1. 先看诊断信息，确认 AudioManager.setPreferredDevicesForStrategy 那几行是否可用
+2. 一线连显示器，看音频卡片是否自动弹出「声音正被显示器占用」警告
+3. 点一键修复，确认声音回到耳机/扬声器
+4. 把事件日志和诊断信息发我，我据此收敛通道

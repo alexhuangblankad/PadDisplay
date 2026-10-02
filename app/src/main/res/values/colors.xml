@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="ic_launcher_background">#FF101418</color>
+    <!-- 取自图标原图圆角外侧的底色，保证自适应图标背景与图形边缘一致 -->
+    <color name="ic_launcher_background">#FFFDFDFD</color>
 </resources>
