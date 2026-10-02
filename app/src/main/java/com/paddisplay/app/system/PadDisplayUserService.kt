@@ -106,7 +106,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     // 诊断
     // ------------------------------------------------------------------
 
-    override fun collectSystemInfo(): String = buildString {
+    override fun collectSystemInfo(): String = clean(buildString {
         appendLine("=== UserService 进程身份 ===")
         appendLine("uid=${android.os.Process.myUid()}  pid=${android.os.Process.myPid()}")
         appendLine("(uid=2000 表示处在 Shizuku 的 shell 权限进程中)")
@@ -130,9 +130,19 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine(powerController.describeChannels())
         appendLine("=== 分辨率通道 ===")
         appendLine(resolutionController.describeChannels())
-    }
+    })
 
-    override fun probeCapabilities(): String = buildString {
+    /**
+     * 清掉跨 Binder 传输后可能混进来的 BOM / 零宽字符。
+     *
+     * 背景：`buildString` 的产物首行可能带 `\uFEFF`，
+     * 客户端用 `line.startsWith("uid=")` 就会匹配失败（曾经导致 uid 显示成 -1）。
+     * 与其在解析侧四处打补丁，不如在产出侧就清掉。
+     */
+    private fun clean(s: String): String =
+        s.replace("\uFEFF", "").replace("\u200B", "").replace("\u0000", "")
+
+    override fun probeCapabilities(): String = clean(buildString {
         appendLine("PadDisplay v${BuildConfig.VERSION_NAME} 能力探测")
         appendLine("时间: ${java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date())}")
         appendLine()
@@ -150,11 +160,11 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine()
         appendLine("[5] AIDL 调用日志（最近 40 条）")
         AidlCodec.callLog.takeLast(40).forEach { appendLine("  $it") }
-    }
+    })
 
     override fun dumpDisplay(): String = execCommand("dumpsys display")
 
-    override fun listPhysicalDisplays(): String = buildString {
+    override fun listPhysicalDisplays(): String = clean(buildString {
         appendLine("=== SurfaceControl / DisplayControl 物理屏 ===")
         val ids = PhysicalDisplayAccess.physicalDisplayIds()
         appendLine("physicalDisplayIds() = ${ids?.joinToString() ?: "(null)"}")
@@ -188,7 +198,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine()
         appendLine("=== AIDL 调用日志（最近 30 条） ===")
         AidlCodec.callLog.takeLast(30).forEach { appendLine("  $it") }
-    }
+    })
 
     // ------------------------------------------------------------------
     // 电源
@@ -276,6 +286,88 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
 
     override fun resetUserPreferredDisplayMode(displayId: Int): String =
         resolutionController.resetUserPreferredMode(displayId).toText()
+
+    // ------------------------------------------------------------------
+    // 音频输出路由
+    // ------------------------------------------------------------------
+
+    private val audioController: AudioRoutingController by lazy {
+        AudioRoutingController(
+            contextProvider = { injectedContext },
+            audioServiceBinder = PhysicalDisplayAccess.audioServiceBinder(),
+        )
+    }
+
+    override fun listAudioOutputs(): String = clean(audioController.describe())
+
+    override fun getCurrentAudioRouting(): String = clean(buildString {
+        appendLine("=== 当前音频路由 ===")
+        appendLine("media(pin): ${audioController.currentMediaOutput()?.let { "id=${it.id} type=${it.type}" } ?: "(读不到)"}")
+        appendLine("comm: ${audioController.currentCommunicationOutput()}")
+        appendLine()
+        appendLine("uid=${android.os.Process.myUid()}")
+        appendLine()
+        appendLine("=== 可用输出 ===")
+        audioController.availableOutputs().forEach { o ->
+            appendLine(
+                "  id=${o.id} type=${o.type} name=${o.name} addr=${o.address}" +
+                    (if (o.isCurrentMedia) "  <current-media>" else "") +
+                    (if (o.isDisplayLike) "  <display-like>" else ""),
+            )
+        }
+    })
+
+    override fun setAudioOutputDevice(deviceId: Int, pinMedia: Boolean, pinComm: Boolean): String =
+        clean(buildString {
+            appendLine("请求把音频输出切到 deviceId=$deviceId (pinMedia=$pinMedia, pinComm=$pinComm)")
+            appendLine("uid=${android.os.Process.myUid()}")
+            appendLine()
+            val reports = mutableListOf<AudioRoutingController.Report>()
+            if (pinMedia) reports += audioController.pinMediaOutput(deviceId)
+            if (pinComm) reports += audioController.setCommunicationOutput(deviceId)
+            reports.forEach { appendLine(it.toText()) }
+            appendLine()
+            appendLine(if (reports.any { it.ok }) "结果: 成功" else "结果: 全部通道失败")
+            appendLine()
+            appendLine("—— 写入后实际路由 ——")
+            appendLine("media: ${audioController.currentMediaOutput()?.let { "id=${it.id} type=${it.type}" } ?: "(读不到)"}")
+            appendLine("comm: ${audioController.currentCommunicationOutput()}")
+        })
+
+    override fun clearAudioOutputPreference(): String = clean(buildString {
+        appendLine("清除本应用设置的音频输出偏好")
+        audioController.unpinMediaOutput().forEach { appendLine(it.toText()) }
+        appendLine()
+        appendLine("—— 清除后实际路由 ——")
+        appendLine("media: ${audioController.currentMediaOutput()?.let { "id=${it.id} type=${it.type}" } ?: "(读不到)"}")
+        appendLine("comm: ${audioController.currentCommunicationOutput()}")
+    })
+
+    // ------------------------------------------------------------------
+    // 外接屏显示模式
+    // ------------------------------------------------------------------
+
+    private val mirrorController: DisplayMirrorController by lazy {
+        DisplayMirrorController(windowService())
+    }
+
+    override fun setExtendMode(externalDisplayId: Int): String = clean(buildString {
+        appendLine("把外接屏 displayId=$externalDisplayId 切到「扩展」模式")
+        appendLine("uid=${android.os.Process.myUid()}")
+        appendLine()
+        mirrorController.applyExtendMode(externalDisplayId).forEach { appendLine(it.toText()) }
+        appendLine()
+        appendLine("—— 读回状态 ——")
+        appendLine(
+            "windowingMode = " +
+                (mirrorController.getWindowingMode(externalDisplayId)?.let {
+                    DisplayMirrorController.windowingModeName(it)
+                } ?: "(读不到)"),
+        )
+    })
+
+    override fun getDisplayModeState(externalDisplayId: Int): String =
+        clean(mirrorController.describe(externalDisplayId))
 
     // ------------------------------------------------------------------
 

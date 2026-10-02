@@ -193,6 +193,20 @@ object PhysicalDisplayAccess {
         return raw.toLongOrNull()
     }
 
+    /**
+     * 取 `IAudioService` 的 Binder。
+     * 用于给「媒体」音频策略固定首选输出设备（需要 `MODIFY_AUDIO_ROUTING`，shell 持有）。
+     * 服务名是 `"audio"`（见 `android.media.AudioManager` / `AudioService`）。
+     */
+    fun audioServiceBinder(): IBinder? {
+        Reflect.classForName("android.os.ServiceManager")?.let { clazz ->
+            Reflect.findMethod(clazz, "getService", String::class.java)?.let { m ->
+                runCatching { return m.invoke(null, "audio") as? IBinder }
+            }
+        }
+        return null
+    }
+
     fun describe(): String = buildString {
         val sc = Reflect.classForName(SURFACE_CONTROL)
         appendLine("SurfaceControl.getPhysicalDisplayIds: ${Reflect.findMethod(sc, "getPhysicalDisplayIds") != null}")

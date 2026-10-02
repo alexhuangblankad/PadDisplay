@@ -1,0 +1,49 @@
+v0.1.1: 修复 uid 解析 / 修正 AIDL code / 新增音频输出选择与显示模式切换
+
+## 修复
+
+- **uid=-1（用户可见的误导）**：UserService 返回的首行带 BOM(\uFEFF)，
+  客户端用 `startsWith("uid=")` 永远匹配不上。改为直接问
+  `Binder.getCallingUid()`（权威且不受文本格式影响），
+  并在 UserService 产出侧清掉 BOM / 零宽字符。
+  注意：这只是显示 bug，不影响功能，但它掩盖了真正的报错信息。
+
+- **音频 AIDL transaction code 整体差 1**：
+  set/remove/getPreferredDevicesForStrategy 由 154/155/156 修正为 **153/154/155**。
+  差 1 会让调用打到相邻方法上——transact 成功、不抛异常，但什么都没做。
+
+- **窗口模式 AIDL code 修正**：getWindowingMode / setWindowingMode
+  由 API34 的 95/96、API35/36 的 96/97 修正为
+  **API34 97/98、API35/36 98/99**。
+
+## 新增
+
+- **音频输出选择**（对应用户痛点：一线连显示器后蓝牙耳机没声）
+  - 枚举所有音频输出，标出「当前媒体输出」与「显示器类」设备
+  - 「设为音频输出」用 `IAudioService.setPreferredDevicesForStrategy`
+    固定**媒体**音频输出；公共 API `AudioManager.setCommunicationDevice` 兜底
+  - 「恢复自动」一键清除
+  - 开关「接入外屏时自动把声音留在平板侧」（默认开启，优先耳机其次扬声器）
+
+- **音频状态卫生（不跨会话残留）**
+  - App 启动自愈：先清除上次会话可能留下的音频固定
+  - 拔掉外接屏时自动清除
+  - 只写 AOSP 首选设备偏好，不碰音量 / force-use / 设备连接状态
+  - 每次写入后立刻读回验证，不一致就报失败
+
+- **外接屏显示模式：扩展 / 复制 / 仅外接屏**
+  - 扩展：per-display `setWindowingMode(FULLSCREEN)` 打破镜像，读回验证
+  - 复制：如实说明 Android 14+ 已移除强制镜像 API（`setDisplayIdToMirror`
+    在 API 34/35/36 的 AIDL 里都不存在），不冒险硬做
+  - 仅外接屏：关闭内屏 panel
+
+- **tools/verify-aidl-codes.ps1**：用真实 `aidl.exe` 编译同序骨架 AIDL，
+  读编译器写出的 `TRANSACTION_* = FIRST_CALL_TRANSACTION + n`，
+  一条命令复核所有 transaction code。
+
+## 验证
+
+所有 transaction code 已用真实编译器逐条验证：
+IDisplayManager / IWindowManager / IAudioService × API 34/35/36。
+本项目在 code 上踩过两次「整体差 1」的坑，症状都是静默失效，
+因此新增的验证脚本会在 README 中说明为强制流程。

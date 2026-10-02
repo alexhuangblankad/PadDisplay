@@ -42,6 +42,9 @@ object ShizukuManager {
     /** Shizuku 权限申请请求码。 */
     const val REQUEST_CODE_PERMISSION = 0x5A17
 
+    /** Android 的 shell 用户 uid —— 也就是 Shizuku UserService 期望的身份。 */
+    const val PROCESS_UID_SHELL = 2000
+
     /** UserService 进程名后缀。 */
     private const val USER_SERVICE_PROCESS_SUFFIX = "shizuku_service"
 
@@ -243,6 +246,13 @@ object ShizukuManager {
             .version(USER_SERVICE_VERSION)
     }
 
+    /**
+     * 最近一次 UserService 自检的**原始文本**，直接显示在诊断信息里。
+     * 不做任何解析，避免解析 bug 再掩盖真实错误。
+     */
+    private val _lastServiceReport = MutableStateFlow("")
+    val lastServiceReport: StateFlow<String> = _lastServiceReport.asStateFlow()
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             Log.i(TAG, "UserService 已连接")
@@ -252,22 +262,29 @@ object ShizukuManager {
                 _state.value = ConnectionState(Stage.ERROR, "UserService 连接成功但接口转换失败")
                 return
             }
-            // 拿 shell 进程的 uid 做自检：必须是 2000
-            val uid = runCatching {
-                svc.collectSystemInfo().lineSequence()
-                    .firstOrNull { it.startsWith("uid=") }
-                    ?.removePrefix("uid=")?.trim()?.toIntOrNull() ?: -1
-            }.getOrDefault(-1)
 
+            // 拿 shell 进程的 uid 做自检。
+            //
+            // ⚠️ 必须是 2000（shell）。但**不要**用 collectSystemInfo() 的文本去解析：
+            // UserService 返回的第一行行首可能带 BOM(\uFEFF)，用 startsWith("uid=")
+            // 会永远匹配不上，于是这里显示成 -1，让人误以为权限没拿到。
+            // uid 就写在 service 进程的调用身份里，直接问 Binder 最可靠。
+            val uid = runCatching { android.os.Binder.getCallingUid() }.getOrDefault(-1)
+
+            // 同时把原始自检文本抓下来给诊断页用（失败也不影响连接状态）
+            val raw = runCatching { svc.collectSystemInfo() }.getOrElse { "collectSystemInfo 失败: ${Reflect.describe(it)}" }
+            _lastServiceReport.value = raw
+
+            val isShell = uid == PROCESS_UID_SHELL
             _state.value = ConnectionState(
                 Stage.CONNECTED,
-                if (uid == 2000) {
-                    "Shizuku 已连接，系统控制权限已获得（shell uid=2000）"
+                if (isShell) {
+                    "Shizuku 已连接，系统控制权限已获得（UserService uid=2000 shell）"
                 } else {
-                    "UserService 已连接，但 uid=$uid（预期 2000），权限可能不足"
+                    "UserService 已连接，但 uid=$uid（预期 2000/shell），系统调用可能被拒绝"
                 },
                 shizukuVersion = runCatching { "v${Shizuku.getVersion()}" }.getOrDefault(""),
-                shellUid = 2000,
+                shellUid = PROCESS_UID_SHELL,
                 serviceUid = uid,
             )
         }

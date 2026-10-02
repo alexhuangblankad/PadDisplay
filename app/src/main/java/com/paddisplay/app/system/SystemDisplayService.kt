@@ -352,6 +352,112 @@ class SystemDisplayService(
         }
 
     // ------------------------------------------------------------------
+    // 音频输出路由
+    // ------------------------------------------------------------------
+
+    /** 本地（App 进程）枚举音频输出 + 读当前路由，不需要 Shizuku。 */
+    val audio = AudioRoutingController(
+        contextProvider = { context },
+        audioServiceBinder = null,
+    )
+
+    /** 诊断文本（含特权侧的真实路由状态）。 */
+    suspend fun audioDiagnostics(): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.listAudioOutputs() }.getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: audio.describe()
+    }
+
+    /**
+     * 把音频输出切到指定设备。
+     *
+     * @param pinMedia 固定媒体音频（真正解决「一线连后耳机没声」，需要 Shizuku）
+     * @param pinComm  固定通话音（公共 API，无需权限）
+     */
+    suspend fun setAudioOutputDevice(deviceId: Int, pinMedia: Boolean, pinComm: Boolean): OpResult =
+        withContext(Dispatchers.IO) {
+            val svc = service()
+            if (svc != null) {
+                runCatching {
+                    val out = svc.setAudioOutputDevice(deviceId, pinMedia, pinComm)
+                    val ok = out.contains("结果: 成功")
+                    OpResult(ok, if (ok) "音频输出已切换" else "音频输出切换失败", out.lines().filter { it.isNotBlank() })
+                }.getOrElse { OpResult(false, "调用 UserService 失败", listOf(Reflect.describe(it))) }
+            } else {
+                // 没有 Shizuku 时退回公共 API（只能改通话音）
+                val r = audio.setCommunicationOutput(deviceId)
+                OpResult(
+                    r.ok,
+                    if (r.ok) "已用公共 API 切换通话音频" else "无 Shizuku，且公共 API 也失败",
+                    listOf(r.toText(), "提示：固定「媒体」音频必须要有 Shizuku 权限。"),
+                )
+            }
+        }
+
+    /** 清除音频输出偏好，恢复系统自动路由。 */
+    suspend fun clearAudioOutputPreference(): OpResult = withContext(Dispatchers.IO) {
+        val svc = service()
+        if (svc != null) {
+            runCatching {
+                val out = svc.clearAudioOutputPreference()
+                OpResult(true, "已清除音频输出偏好", out.lines().filter { it.isNotBlank() })
+            }.getOrElse { OpResult(false, "清除失败", listOf(Reflect.describe(it))) }
+        } else {
+            val r = audio.clearCommunicationOutput()
+            OpResult(r.ok, "已清除通话音频偏好", listOf(r.toText()))
+        }
+    }
+
+    /** 当前媒体音频实际走哪个设备（App 侧公共 API 读数）。 */
+    fun currentMediaOutputLabel(): String =
+        audio.currentMediaOutput()?.let { "${AudioRoutingController.typeLabel(it.type)}" } ?: "(读不到)"
+
+    // ------------------------------------------------------------------
+    // 外接屏显示模式（扩展 / 复制 / 仅外接屏）
+    // ------------------------------------------------------------------
+
+    /**
+     * 切到「扩展」模式：把外接屏变成独立屏幕。
+     *
+     * ⚠️ 这一步很重要：**Android 外接屏默认可能是镜像**。
+     * 镜像状态下内屏和外屏共用同一个 layer stack，
+     * 此时外屏分辨率改不动、关内屏还会把外屏一起黑掉。
+     * 所以「改分辨率」之前建议先确保是扩展模式。
+     */
+    suspend fun applyExtendMode(externalDisplayId: Int): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+        runCatching {
+            val out = svc.setExtendMode(externalDisplayId)
+            val ok = out.contains("✅")
+            OpResult(ok, if (ok) "已切换到扩展模式" else "切换扩展模式失败", out.lines().filter { it.isNotBlank() })
+        }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+
+    /** 读外接屏的显示模式状态（windowingMode 等）。 */
+    suspend fun displayModeState(externalDisplayId: Int): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.getDisplayModeState(externalDisplayId) }
+                .getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /**
+     * 当前外接屏是否处于镜像（复制）状态。
+     *
+     * 判据：外接屏与内屏的**逻辑尺寸完全相同**且两者都开启，
+     * 且外接屏没有独立的 windowingMode。这只是启发式判断，
+     * 权威结论以 Shizuku 侧读回的 windowingMode 为准。
+     */
+    fun looksMirrored(): Boolean {
+        val internal = repo.internalDisplay() ?: return false
+        val external = repo.primaryExternalDisplay() ?: return false
+        if (internal.logicalWidth == 0 || external.logicalWidth == 0) return false
+        return internal.logicalWidth == external.logicalWidth &&
+            internal.logicalHeight == external.logicalHeight
+    }
+
+    // ------------------------------------------------------------------
     // 诊断汇总文本（第 15 节的“诊断信息”）
     // ------------------------------------------------------------------
 

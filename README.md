@@ -165,6 +165,34 @@ Display.STATE_*             : UNKNOWN=0 OFF=1 ON=2 DOZE=3 DOZE_SUSPEND=4 ON_SUSP
 「保持当前状态」，所以直接传 0 **不会关屏**，还会返回 true。
 代码里做了显式映射。
 
+### 4.3.2 音频：`IAudioService`
+
+同样用真实编译器验证过（API 36 / API 35）：
+
+| 方法 | API 35 | API 36 |
+|---|---|---|
+| `getAudioProductStrategies` | 35 | 37 |
+| `setPreferredDevicesForStrategy` | 144 | 153 |
+| `removePreferredDevicesForStrategy` | 145 | 154 |
+| `getPreferredDevicesForStrategy` | 146 | 155 |
+| `setCommunicationDevice` | 177 | 186 |
+| `getCommunicationDevice` | 178 | 187 |
+
+### 4.3.3 一条命令复核所有 code
+
+```bash
+powershell -ExecutionPolicy Bypass -File tools/verify-aidl-codes.ps1
+```
+
+脚本会把 `tools/aidl/` 下 AOSP 原版 AIDL 的方法名按声明顺序抽出来，
+生成同序骨架交给**真实 `aidl.exe`** 编译，再读编译器写出的
+`TRANSACTION_* = FIRST_CALL_TRANSACTION + n`。任何 code 改动都应该先跑它。
+
+> 这个脚本的存在是有代价换来的：本项目在 transaction code 上**踩过两次坑**
+> （display 一次、audio 一次），两次都是整体差 1，
+> 而症状都是「transact 成功但什么都没做」。
+> 所以现在所有 code 都必须经过编译器验证，不再靠文本解析器或手算。
+
 ### 4.4 关屏通道优先级（ColorOS 兼容层）
 
 ```
@@ -304,7 +332,72 @@ adb install -r app/build/outputs/apk/release/app-release.apk
    - 画面正常 → 点 **保留**
    - 外屏黑屏/花屏 → 等它自动回滚，或点 **立即恢复**
 
-### 6.5 自动模式
+### 6.5 外接屏显示模式（复制 / 扩展 / 仅外接屏）
+
+对标 Windows 的 Win+P：
+
+| 模式 | 实现方式 | 说明 |
+|---|---|---|
+| **扩展** | `IWindowManager.setWindowingMode(外屏, FULLSCREEN)` | 外接屏成为独立屏幕，可单独设分辨率 |
+| **复制** | 系统行为 | Android 14+ 已移除强制镜像 API，本应用**不**强制切换 |
+| **仅外接屏** | 关闭内屏 panel | 只用外接屏，Wi-Fi / 蓝牙 / 键鼠继续工作 |
+
+**为什么"扩展"很重要**：Android 外接屏**默认可能是镜像**。镜像状态下内屏与外屏
+共用同一个 layer stack，此时外屏分辨率**改不动**，关内屏还可能把外屏一起黑掉。
+
+代码里从 AOSP 各 tag 的 `IWindowManager.aidl` 确认：
+**`setDisplayIdToMirror` 在 API 34/35/36 里都不存在**（Android 14 起移除）。
+所以本应用改用 per-display 的 `setWindowingMode`，并且**以系统回读为准**：
+
+```
+setWindowingMode(displayId, FULLSCREEN)
+  ↓
+getWindowingMode(displayId) 读回验证
+  ↓
+一致才报告成功；不一致就如实报告失败（不再出现「报成功其实没做」）
+```
+
+### 6.6 音频输出选择（解决「一线连耳机没声」）
+
+**问题成因**：Android 默认把 USB-C / DisplayPort 显示器当成音频输出设备。
+一线连之后音频策略把媒体音频切到显示器，用户连着的蓝牙耳机就"没声"了。
+另外，`setForcedDisplaySize` 之类的显示配置变更会让系统重跑显示+音频策略重算，
+**于是音频被重新路由到显示器** —— 这就是"用了显示器控制软件之后耳机才没声"的成因。
+
+**解法**：界面上直接选择声音从哪个设备出。
+
+| 通道 | API | 权限 | 能力 |
+|---|---|---|---|
+| 1 | `AudioManager.setCommunicationDevice()` | 无（公共） | 只能影响通话音 |
+| 2 | `IAudioService.setPreferredDevicesForStrategy()` | `MODIFY_AUDIO_ROUTING`（shell 持有） | **固定媒体音频输出 ← 真正的解** |
+
+界面提供：
+
+- 可用输出设备列表（标出**当前媒体输出**与「显示器类」设备）
+- **设为音频输出** / **恢复自动**
+- 开关 **「接入外屏时自动把声音留在平板侧」**（默认开启）
+  优先蓝牙/有线耳机，其次平板内置扬声器
+
+#### 关于"卸载后声音还是坏的"——本项目的处理策略
+
+音频的「首选设备」偏好写在系统 `AudioService` 的策略状态里，**比 App 活得更久**，
+卸载 App 不会自动清除。为把副作用降到最低，本实现刻意遵守：
+
+1. **不做任何跨会话残留**：App 每次启动都会先清除本应用可能设置过的音频偏好，
+   交回系统自动路由（事件日志里会看到「启动自愈」）。
+   用户想在本次会话固定输出，就在界面上显式点一次。
+2. **拔掉外接屏时自动清除**音频固定（此时"显示器抢音频"的问题本身就不存在了）。
+3. 只写 AOSP 的**首选设备**偏好，**不碰音量、不碰 force-use、不改设备连接状态**。
+4. 每次写入后**立刻读回**（`getPreferredDevicesForStrategy`）确认，
+   读回不一致就判定失败并如实报告，绝不谎报成功。
+5. 偏好设置存在 App 私有 DataStore 里，卸载即消失。
+
+> 需要说明的是：本项目源码中**没有任何音频 API 调用**，也不申请任何权限
+> （`AndroidManifest.xml` 里连一条 `uses-permission` 都没有），
+> 因此它不会去修改系统音频路由。上面的功能是**为了解决问题而新增**的能力，
+> 而不是原本就在动音频。
+
+### 6.7 自动模式
 
 | 开关 | 作用 |
 |---|---|
@@ -321,7 +414,7 @@ adb install -r app/build/outputs/apk/release/app-release.apk
 3. 没有 60 Hz 时，取最接近 60 Hz 的模式（略高优先）
 4. 用户仍可手动选择 120 Hz 等更高刷新率
 
-### 6.6 诊断信息
+### 6.8 诊断信息
 
 右上角 **诊断信息** → 输出设备信息、Shizuku 状态、每块 Display 的
 id/type/flags/state/address/物理屏 token/当前 Mode/首选 Mode/全部 supportedModes，

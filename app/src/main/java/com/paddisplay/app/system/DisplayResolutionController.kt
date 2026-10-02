@@ -50,7 +50,20 @@ class DisplayResolutionController(
          */
         private const val SET_USER_PREFERRED_DISPLAY_MODE = 42
 
-        // IWindowManager：API 34 与 35/36 相差 1（34 里前面多一个方法）
+        /**
+         * 各 API 版本 `IWindowManager.aidl` 的确定 transaction code。
+         *
+         * 全部用**真实 `aidl.exe`** 编译同序骨架 AIDL 验证过
+         * （把 AOSP `.aidl` 的方法名按声明顺序抽出 → 生成同序接口 → 读编译器写出的
+         * `TRANSACTION_* = FIRST_CALL_TRANSACTION + n`）：
+         *
+         * | 方法 | API 34 | API 35 | API 36 |
+         * |---|---|---|---|
+         * | getInitialDisplaySize | 6 | 5 | 5 |
+         * | getBaseDisplaySize | 7 | 6 | 6 |
+         * | setForcedDisplaySize | 8 | 7 | 7 |
+         * | clearForcedDisplaySize | 9 | 8 | 8 |
+         */
         private fun getInitialDisplaySizeCode(): Int = if (Build.VERSION.SDK_INT <= 34) 6 else 5
         private fun getBaseDisplaySizeCode(): Int = if (Build.VERSION.SDK_INT <= 34) 7 else 6
         private fun setForcedDisplaySizeCode(): Int = if (Build.VERSION.SDK_INT <= 34) 8 else 7

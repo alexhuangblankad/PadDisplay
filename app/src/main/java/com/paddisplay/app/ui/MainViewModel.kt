@@ -14,6 +14,7 @@ import com.paddisplay.app.display.DisplayModeSelector
 import com.paddisplay.app.display.DisplayRole
 import com.paddisplay.app.display.DisplaySnapshot
 import com.paddisplay.app.shizuku.ShizukuManager
+import com.paddisplay.app.system.AudioRoutingController
 import com.paddisplay.app.system.SystemDisplayService
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -53,7 +54,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val selectedResolution: Pair<Int, Int>? = null,
         val selectedRefresh: Float? = null,
         val internalTurnedOff: Boolean = false,
+        // ---------------- 音频 ----------------
+        val audioOutputs: List<AudioRoutingController.AudioOutput> = emptyList(),
+        val selectedAudioDeviceId: Int? = null,
+        val currentMediaOutput: String = "(读不到)",
+        val currentCommOutput: String = "(读不到)",
+        // ---------------- 显示模式 ----------------
+        val displayMode: DisplayMode = DisplayMode.UNKNOWN,
+        val displayModeDetail: String = "",
     )
+
+    /** 外接屏显示模式（对标 Windows Win+P）。 */
+    enum class DisplayMode(val label: String) {
+        EXTEND("扩展"),
+        MIRROR("复制"),
+        EXTERNAL_ONLY("仅外接屏"),
+        UNKNOWN("未知"),
+    }
 
     /** 待确认的危险操作（防黑屏回滚）。 */
     data class PendingConfirm(
@@ -75,6 +92,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         observeHotplug()
         refreshDisplays()
         hotplug.start()
+
+        // ================================================================
+        // 音频状态自愈（非常重要，防止「卸载后声音还是坏的」）
+        //
+        // 音频的「首选设备」偏好是写在系统 AudioService 策略状态里的，
+        // 它会比 App 活得更久 —— 用户卸载 App 也不会自动清掉。
+        // 这既有可能是用户现在遇到的音频异常的成因，也是我们必须避免的副作用。
+        //
+        // 因此采取「不跨会话残留」策略：
+        //   App 每次启动都把本应用可能设置过的音频偏好清掉，交回系统自动路由。
+        //   用户想在本次会话里固定输出，就在界面上显式点一次。
+        //   这样最坏情况下（App 被杀 / 被卸载）系统的音频状态一定是干净的。
+        // ================================================================
+        viewModelScope.launch {
+            delay(2500)
+            if (ShizukuManager.state.value.canControl) {
+                appendLog("启动自愈：清除上一次会话可能留下的音频输出固定")
+                val r = systemService.clearAudioOutputPreference()
+                appendLog("启动自愈结果：${r.toText().replace("\n", " / ")}")
+                refreshAudio()
+            }
+        }
 
         // 崩溃/异常退出后的安全兜底。
         //
@@ -151,8 +190,139 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 displays = displays,
                 externalConnected = displays.any { d -> d.isExternal },
             )
+            refreshAudio()
+            refreshDisplayMode()
         }
     }
+
+    // ------------------------------------------------------------------
+    // 音频输出
+    // ------------------------------------------------------------------
+
+    /** 刷新音频输出列表与当前实际路由（公共 API，不需要 Shizuku）。 */
+    fun refreshAudio() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val outputs = systemService.audio.availableOutputs()
+            val media = systemService.audio.currentMediaOutput()
+            val comm = systemService.audio.currentCommunicationOutput()
+            val mediaLabel = media?.let { "${AudioRoutingController.typeLabel(it.type)}" } ?: "(读不到)"
+            _ui.value = _ui.value.copy(
+                audioOutputs = outputs,
+                currentMediaOutput = mediaLabel,
+                currentCommOutput = comm,
+                // 默认选中「当前媒体输出」，方便直接把声音钉回耳机
+                selectedAudioDeviceId = _ui.value.selectedAudioDeviceId
+                    ?: outputs.firstOrNull { it.isCurrentMedia }?.id
+                    ?: outputs.firstOrNull { !it.isDisplayLike }?.id,
+            )
+            appendLog("音频输出：当前媒体=$mediaLabel，通话=$comm，可选设备 ${outputs.size} 个")
+        }
+    }
+
+    fun selectAudioDevice(deviceId: Int) {
+        _ui.value = _ui.value.copy(selectedAudioDeviceId = deviceId)
+    }
+
+    /**
+     * 把音频输出切到选定设备。
+     * @param pinMedia 固定媒体音频（需要 Shizuku）
+     */
+    fun applyAudioOutput(pinMedia: Boolean = true) {
+        viewModelScope.launch {
+            val id = _ui.value.selectedAudioDeviceId
+            if (id == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 请先选择一个音频输出设备")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.setAudioOutputDevice(id, pinMedia = pinMedia, pinComm = true)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("切换音频输出 -> deviceId=$id: ${r.toText().replace("\n", " / ")}")
+            delay(600)
+            refreshAudio()
+        }
+    }
+
+    /** 恢复系统自动音频路由（一键「别乱动我的声音」）。 */
+    fun clearAudioOutput() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.clearAudioOutputPreference()
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("清除音频输出偏好: ${r.toText().replace("\n", " / ")}")
+            delay(600)
+            refreshAudio()
+        }
+    }
+
+    val preferInternalAudio by lazy { settings.preferInternalAudioOnExternal }
+
+    fun setPreferInternalAudio(value: Boolean) = viewModelScope.launch {
+        settings.setPreferInternalAudioOnExternal(value)
+        appendLog(if (value) "已开启：接入外屏时自动把声音留在平板（耳机/扬声器）" else "已关闭外屏音频保护")
+    }
+
+    // ------------------------------------------------------------------
+    // 外接屏显示模式（扩展 / 复制 / 仅外接屏）
+    // ------------------------------------------------------------------
+
+    fun refreshDisplayMode() {
+        viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(displayMode = DisplayMode.UNKNOWN, displayModeDetail = "未检测到外接屏")
+                return@launch
+            }
+            val detail = systemService.displayModeState(external.displayId)
+            val mode = when {
+                _ui.value.internalTurnedOff -> DisplayMode.EXTERNAL_ONLY
+                systemService.looksMirrored() -> DisplayMode.MIRROR
+                else -> DisplayMode.EXTEND
+            }
+            _ui.value = _ui.value.copy(displayMode = mode, displayModeDetail = detail)
+        }
+    }
+
+    fun setDisplayMode(mode: DisplayMode) {
+        viewModelScope.launch {
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true, displayMode = mode)
+            val lines = mutableListOf<String>()
+            when (mode) {
+                DisplayMode.EXTEND -> {
+                    val r = systemService.applyExtendMode(external.displayId)
+                    lines += r.toText()
+                    // 扩展模式下内屏要保持点亮
+                    if (_ui.value.internalTurnedOff) {
+                        val on = systemService.restoreInternalDisplayWithRetry(attempts = 2)
+                        hotplug.markInternalTurnedOff(!on.ok)
+                        lines += offOrOnResult(on)
+                    }
+                }
+                DisplayMode.MIRROR -> {
+                    lines += "复制模式为系统行为：Android 14+ 已移除强制镜像 API。"
+                    lines += "当前状态以系统读回为准，详见下方详情。"
+                }
+                DisplayMode.EXTERNAL_ONLY -> {
+                    val off = systemService.turnOffInternalDisplay()
+                    hotplug.markInternalTurnedOff(off.ok)
+                    lines += offOrOnResult(off)
+                }
+                DisplayMode.UNKNOWN -> Unit
+            }
+            _ui.value = _ui.value.copy(busy = false, lastResult = lines.joinToString("\n"))
+            appendLog("显示模式 -> ${mode.label}: " + lines.joinToString(" / ").replace("\n", " "))
+            delay(500)
+            refreshDisplays()
+        }
+    }
+
+    private fun offOrOnResult(r: SystemDisplayService.OpResult): String =
+        (if (r.ok) "✅ " else "❌ ") + r.title
 
     fun appendLog(msg: String) {
         val stamp = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US).format(java.util.Date())

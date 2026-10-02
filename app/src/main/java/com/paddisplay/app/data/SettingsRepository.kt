@@ -55,6 +55,17 @@ class SettingsRepository(private val context: Context) {
          * 否则用户会陷入黑屏。
          */
         val INTERNAL_SCREEN_OFF = booleanPreferencesKey("internalScreenOff")
+
+        /**
+         * 接入外接屏时，是否自动把音频输出留在平板侧（耳机 / 内置扬声器）。
+         *
+         * 默认**开启**：Android 默认会把 USB-C / DP 显示器当音频输出，
+         * 导致用户连着的蓝牙耳机「没声」。这个开关就是用来防止这件事的。
+         */
+        val PREFER_INTERNAL_AUDIO = booleanPreferencesKey("preferInternalAudioOnExternal")
+
+        /** 用户选定的音频输出设备 id。 */
+        val PREFERRED_AUDIO_DEVICE = intPreferencesKey("preferredAudioDeviceId")
     }
 
     val autoNativeResolution: Flow<Boolean> =
@@ -126,6 +137,22 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setInternalScreenOff(off: Boolean) =
         context.dataStore.edit { it[Keys.INTERNAL_SCREEN_OFF] = off }
+
+    // ------------------------------------------------------------------
+    // 音频
+    // ------------------------------------------------------------------
+
+    val preferInternalAudioOnExternal: Flow<Boolean> =
+        context.dataStore.data.map { it[Keys.PREFER_INTERNAL_AUDIO] ?: true }
+
+    val preferredAudioDeviceId: Flow<Int> =
+        context.dataStore.data.map { it[Keys.PREFERRED_AUDIO_DEVICE] ?: -1 }
+
+    suspend fun setPreferInternalAudioOnExternal(value: Boolean) =
+        context.dataStore.edit { it[Keys.PREFER_INTERNAL_AUDIO] = value }
+
+    suspend fun setPreferredAudioDeviceId(value: Int) =
+        context.dataStore.edit { it[Keys.PREFERRED_AUDIO_DEVICE] = value }
 
     // ------------------------------------------------------------------
     // 屏幕角色手动覆盖

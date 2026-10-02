@@ -8,6 +8,7 @@ import android.util.Log
 import com.paddisplay.app.data.SettingsRepository
 import com.paddisplay.app.display.DisplayRepository
 import com.paddisplay.app.display.DisplaySnapshot
+import com.paddisplay.app.system.Reflect
 import com.paddisplay.app.system.SystemDisplayService
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -116,6 +117,64 @@ class DisplayHotplugManager(
         log("热插拔监听已停止")
     }
 
+    /**
+     * 音频保护：把音频输出从「显示器」拉回到用户真正想用的设备。
+     *
+     * 优先级：
+     * 1. 用户上次显式选定的设备（如果现在还连着）
+     * 2. 当前已连接的蓝牙 / 有线耳机
+     * 3. 平板内置扬声器
+     *
+     * 找到目标后交给 UserService 固定「媒体」音频策略。
+     * 若没有 Shizuku 权限，会退化成只固定通话音，并如实记录失败原因。
+     */
+    private suspend fun applyAudioProtection() {
+        val outputs = systemService.audio.availableOutputs()
+        if (outputs.isEmpty()) {
+            log("音频保护：读不到输出设备列表，跳过")
+            return
+        }
+
+        val preferredId = settings.preferredAudioDeviceId.first()
+        val chosen = outputs.firstOrNull { it.id == preferredId && !it.isDisplayLike }
+            ?: outputs.firstOrNull { !it.isDisplayLike && isHeadset(it.type) }
+            ?: outputs.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            ?: outputs.firstOrNull { !it.isDisplayLike }
+
+        if (chosen == null) {
+            log("音频保护：没有找到非显示器的输出设备，跳过")
+            return
+        }
+
+        val current = systemService.audio.currentMediaOutput()
+        if (current != null && current.id == chosen.id) {
+            log("音频保护：媒体音频已经在「${chosen.typeName}」，无需处理")
+            return
+        }
+
+        log("音频保护：把媒体音频从「${current?.let { com.paddisplay.app.system.AudioRoutingController.typeLabel(it.type) } ?: "未知"}」切到「${chosen.typeName}」")
+        val r = systemService.setAudioOutputDevice(chosen.id, pinMedia = true, pinComm = true)
+        log("音频保护结果：${r.toText().replace("\n", " / ")}")
+    }
+
+    private fun isHeadset(type: Int): Boolean = when (type) {
+        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
+        android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER,
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+        -> true
+        else -> false
+    }
+
+    /** 供 UI 手动触发音频保护。 */
+    suspend fun applyAudioProtectionNow(): String {
+        applyAudioProtection()
+        return "已尝试把音频输出切回平板侧设备，详见事件日志"
+    }
+
     private suspend fun refreshExternalFlag() {
         // 枚举会走反射 + Binder，放到 IO 线程，避免卡主线程
         val displays = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -148,6 +207,14 @@ class DisplayHotplugManager(
 
         _externalConnected.value = true
         log("检测到外接屏：${target.name} ${target.currentModeLabel}，支持 ${target.supportedModes.size} 个模式")
+
+        // 2.5) 音频保护 —— 这一步直接对应用户的真实痛点：
+        //      Android 默认把 USB-C / DP 显示器当成音频输出，一线连之后
+        //      用户连着的蓝牙耳机就「没声」了。这里在接入外屏后立刻把
+        //      音频输出重新钉回用户选择的设备（默认优先耳机 / 内置扬声器）。
+        if (settings.preferInternalAudioOnExternal.first()) {
+            applyAudioProtection()
+        }
 
         // 3) 应用最佳分辨率（若开启）
         if (settings.autoNativeResolution.first()) {
@@ -208,6 +275,14 @@ class DisplayHotplugManager(
         // 宁可多点一次内屏，也不能让用户黑屏。
         if (!anyExternal) {
             log("没有外接屏了（displayId=$displayId 被移除）→ 恢复内屏（failsafe）")
+
+            // 顺手把音频输出固定也清掉：外接屏都拔了，就没有「显示器抢音频」的问题，
+            // 此时应交回系统自动路由，避免留下任何跨会话的音频状态。
+            runCatching {
+                val r = systemService.clearAudioOutputPreference()
+                log("音频固定已清除：${r.toText().replace("\n", " / ")}")
+            }.onFailure { log("清除音频固定失败：${Reflect.describe(it)}") }
+
             // 等 DisplayManager 状态稳定，失败则重试
             delay(300)
             val result = systemService.restoreInternalDisplayWithRetry(attempts = 4)

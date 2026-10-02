@@ -49,6 +49,46 @@ interface IPadDisplayService {
     /** 兼容性探测：报告哪一个控制通道在本机可用。 */
     String probeCapabilities();
 
+    // ------------------------------------------------------------------
+    // 音频输出路由
+    //
+    // 为什么需要它：Android 默认把 USB-C / DP 显示器当作音频输出设备，
+    // 一线连之后媒体音频会被切到显示器，用户的蓝牙耳机就「没声」了。
+    // 正确做法是给「媒体」音频策略指定首选设备（IAudioService）。
+    // ------------------------------------------------------------------
+
+    /** 枚举所有可用的音频输出设备。 */
+    String listAudioOutputs();
+
+    /** 当前媒体音频实际走哪个设备（读 AOSP 状态，不是猜的）。 */
+    String getCurrentAudioRouting();
+
+    /**
+     * 指定音频输出设备。
+     * @param deviceId AudioDeviceInfo.getId()
+     * @param pinMedia   是否固定「媒体」策略
+     * @param pinComm    是否固定「通话音」策略
+     */
+    String setAudioOutputDevice(int deviceId, boolean pinMedia, boolean pinComm);
+
+    /** 清除本应用设置的所有首选音频设备（恢复系统自动路由）。 */
+    String clearAudioOutputPreference();
+
+    // ------------------------------------------------------------------
+    // 外接屏显示模式（扩展 / 复制 / 仅外接屏）
+    // ------------------------------------------------------------------
+
+    /**
+     * 把外接屏切成独立屏幕（= 扩展模式）。
+     *
+     * 实现是 per-display 地把它的 windowingMode 设为 FULLSCREEN，
+     * 写入后读回验证。只影响 externalDisplayId，不碰内屏。
+     */
+    String setExtendMode(int externalDisplayId);
+
+    /** 读取外接屏当前的 windowingMode 与显示模式相关状态。 */
+    String getDisplayModeState(int externalDisplayId);
+
     /** 结束 UserService 进程。 */
     void destroy();
 }

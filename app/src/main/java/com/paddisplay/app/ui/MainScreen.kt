@@ -131,6 +131,8 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
             }
 
             if (external != null) {
+                item { DisplayModeCard(vm = vm, ui = ui, external = external) }
+                item { AudioOutputCard(vm = vm, ui = ui) }
                 item { ResolutionPicker(vm = vm, ui = ui, external = external) }
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -326,6 +328,195 @@ private fun AutomationCard(vm: MainViewModel) {
                 checked = moonlight,
                 onChange = { vm.setLaunchMoonlight(it) },
             )
+        }
+    }
+}
+
+/**
+ * 外接屏显示模式（对标 Windows 的 Win+P）。
+ *
+ * 三个选项的选择依据：
+ * - **扩展**：外接屏成为独立屏幕（走 IWindowManager.setWindowingMode 打破镜像）
+ * - **复制**：系统行为，Android 14+ 已移除强制镜像 API，这里如实说明
+ * - **仅外接屏**：关闭内屏 panel，外接屏继续工作
+ */
+@Composable
+private fun DisplayModeCard(
+    vm: MainViewModel,
+    ui: MainViewModel.UiState,
+    external: com.paddisplay.app.display.DisplaySnapshot,
+) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            SectionTitle("外接屏显示模式")
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "对标 Windows 的「复制 / 扩展 / 仅第二屏幕」。默认判定：${ui.displayMode.label}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+
+            MainViewModel.DisplayMode.entries
+                .filter { it != MainViewModel.DisplayMode.UNKNOWN }
+                .forEach { mode ->
+                    val selected = ui.displayMode == mode
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .selectable(
+                                selected = selected,
+                                enabled = ui.shizuku.canControl && !ui.busy,
+                                onClick = { vm.setDisplayMode(mode) },
+                            )
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(
+                            selected = selected,
+                            enabled = ui.shizuku.canControl && !ui.busy,
+                            onClick = { vm.setDisplayMode(mode) },
+                        )
+                        Column(Modifier.weight(1f)) {
+                            Text(mode.label, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                when (mode) {
+                                    MainViewModel.DisplayMode.EXTEND ->
+                                        "外接屏作为独立屏幕，可单独设分辨率（改分辨率前建议先切到这个）"
+                                    MainViewModel.DisplayMode.MIRROR ->
+                                        "外接屏与平板显示相同内容（系统行为，本应用不强制切换）"
+                                    MainViewModel.DisplayMode.EXTERNAL_ONLY ->
+                                        "关闭平板内屏，只用外接屏（Wi-Fi / 蓝牙 / 键鼠继续工作）"
+                                    MainViewModel.DisplayMode.UNKNOWN -> ""
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
+            Spacer(Modifier.height(6.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { vm.refreshDisplayMode() },
+                    enabled = !ui.busy,
+                ) { Text("刷新显示模式状态") }
+            }
+            if (ui.displayModeDetail.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    ui.displayModeDetail,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/**
+ * 音频输出选择。
+ *
+ * 直接对应用户痛点：Android 默认把 USB-C / DP 显示器当音频输出，
+ * 一线连之后蓝牙耳机就「没声」了。这里让用户显式指定声音从哪出。
+ */
+@Composable
+private fun AudioOutputCard(vm: MainViewModel, ui: MainViewModel.UiState) {
+    val protect by vm.preferInternalAudio.collectAsState(initial = true)
+
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            SectionTitle("音频输出")
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "当前媒体音频：${ui.currentMediaOutput}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.secondary,
+            )
+            Text(
+                "当前通话音频：${ui.currentCommOutput}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+
+            if (ui.audioOutputs.isEmpty()) {
+                Text(
+                    "读不到音频输出设备列表",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+            ui.audioOutputs.forEach { out ->
+                val selected = ui.selectedAudioDeviceId == out.id
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectable(selected = selected, onClick = { vm.selectAudioDevice(out.id) })
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = selected, onClick = { vm.selectAudioDevice(out.id) })
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            out.displayName + if (out.isCurrentMedia) "（当前）" else "",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        if (out.isDisplayLike) {
+                            Text(
+                                "显示器类设备 —— 一线连时系统会优先往这里送声音",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.tertiary,
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.applyAudioOutput(pinMedia = true) },
+                    enabled = !ui.busy && ui.selectedAudioDeviceId != null,
+                    modifier = Modifier.weight(1f),
+                ) { Text("设为音频输出") }
+                OutlinedButton(
+                    onClick = { vm.clearAudioOutput() },
+                    enabled = !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("恢复自动") }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "「设为音频输出」会用 Shizuku 把系统「媒体」音频固定到所选设备，" +
+                    "这样即使连着显示器，声音也留在你的耳机 / 平板扬声器。" +
+                    "「恢复自动」会清除该固定，交回系统决定。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(Modifier.height(6.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(4.dp))
+            ToggleRow(
+                title = "接入外屏时自动把声音留在平板侧",
+                subtitle = "优先蓝牙/有线耳机，其次平板扬声器；防止显示器抢走音频",
+                checked = protect,
+                onChange = { vm.setPreferInternalAudio(it) },
+            )
+            OutlinedButton(
+                onClick = { vm.applyAudioOutput(pinMedia = true) },
+                enabled = !ui.busy && ui.selectedAudioDeviceId != null,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("立即把声音切回所选设备") }
         }
     }
 }
