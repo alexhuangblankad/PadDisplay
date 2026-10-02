@@ -206,14 +206,17 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
 
     override fun setDisplayPowerMode(displayId: Int, powerMode: Int): String {
         val reports = powerController.setPower(displayId, powerMode)
-        return buildString {
+        val ok = reports.firstOrNull { it.ok }
+        return clean(buildString {
             appendLine("displayId=$displayId 请求电源模式 ${DisplayPowerController.powerModeName(powerMode)}")
-            reports.forEach { appendLine(it.toText()) }
-            val ok = reports.firstOrNull { it.ok }
+            // 机器可判定的结果行（上层据此判成功，不依赖 ✅ 子串 —— 这类判定出过假成功）
+            appendLine("RESULT_OK=${ok != null}")
             appendLine()
-            appendLine(if (ok != null) "结果: 成功（通道 ${ok.channel}）" else "结果: 全部通道失败")
-            if (ok == null) appendLine("Uid=${android.os.Process.myUid()}，请把以上完整信息发回排查")
-        }
+            reports.forEach { appendLine(it.toText()) }
+            appendLine()
+            appendLine(if (ok != null) "成功通道: ${ok.channel}" else "全部通道失败")
+            if (ok == null) appendLine("uid=${android.os.Process.myUid()}，请把以上完整信息发回排查")
+        })
     }
 
     override fun getDisplayPowerMode(displayId: Int): String {
@@ -233,24 +236,28 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         val before = resolutionController.readDisplaySize(displayId)
         val reports = resolutionController.setForcedDisplaySize(displayId, width, height)
         val after = resolutionController.readDisplaySize(displayId)
-        return buildString {
+        val ok = reports.any { it.ok }
+        return clean(buildString {
             appendLine("displayId=$displayId 逻辑尺寸覆盖 ${width}x$height")
+            appendLine("RESULT_OK=$ok")
             appendLine("修改前: ${before.text}")
             reports.forEach { appendLine(it.toText()) }
             appendLine("修改后: ${after.text}")
             appendLine()
             appendLine("提示: 这是逻辑尺寸覆盖（不改硬件时序）。要切真实 Mode 请用 setUserPreferredDisplayMode。")
-        }
+        })
     }
 
     override fun clearForcedDisplaySize(displayId: Int): String {
         val reports = resolutionController.clearForcedDisplaySize(displayId)
         val after = resolutionController.readDisplaySize(displayId)
-        return buildString {
+        val ok = reports.any { it.ok }
+        return clean(buildString {
             appendLine("displayId=$displayId 清除逻辑尺寸覆盖")
+            appendLine("RESULT_OK=$ok")
             reports.forEach { appendLine(it.toText()) }
             appendLine("清除后: ${after.text}")
-        }
+        })
     }
 
     override fun getDisplaySizes(displayId: Int): String = buildString {
@@ -276,12 +283,20 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
             refreshRate = refreshRate,
         )
         val reports = resolutionController.changeMode(displayId, info)
-        return buildString {
+        val modeOk = reports.any { it.ok }
+
+        // 真实 Mode 失败时，顺带报告一次逻辑尺寸通道是否可用，
+        // 让上层的「回退到逻辑尺寸覆盖」有依据（而不是自己去猜）。
+        return clean(buildString {
             appendLine("displayId=$displayId 请求切换 Mode -> ${info.label} (modeId=$modeId)")
-            reports.forEach { appendLine(it.toText()) }
+            appendLine("RESULT_OK=$modeOk")
             appendLine()
-            appendLine(if (reports.any { it.ok }) "结果: 成功" else "结果: 失败（可回退到逻辑尺寸覆盖通道）")
-        }
+            reports.forEach { appendLine(it.toText()) }
+            if (!modeOk) {
+                appendLine()
+                appendLine("真实 Mode 切换失败；逻辑尺寸覆盖通道仍可用作回退。")
+            }
+        })
     }
 
     override fun resetUserPreferredDisplayMode(displayId: Int): String =
@@ -322,12 +337,32 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
             appendLine("请求把音频输出切到 deviceId=$deviceId (pinMedia=$pinMedia, pinComm=$pinComm)")
             appendLine("uid=${android.os.Process.myUid()}")
             appendLine()
+
             val reports = mutableListOf<AudioRoutingController.Report>()
-            if (pinMedia) reports += audioController.pinMediaOutput(deviceId)
-            if (pinComm) reports += audioController.setCommunicationOutput(deviceId)
-            reports.forEach { appendLine(it.toText()) }
+            var mediaOk = false
+            if (pinMedia) {
+                val mediaReports = audioController.pinMediaOutput(deviceId, alsoPinCommunication = pinComm)
+                reports += mediaReports
+                // 判定以「媒体通道 + 读回验证」为准。
+                // 审计 F6：早先用 any{it.ok} 汇总，媒体失败而通话成功时会误报成功。
+                mediaOk = mediaReports.any { it.channel == "读回验证" && it.ok }
+            } else if (pinComm) {
+                val r = audioController.setCommunicationOutput(deviceId)
+                reports += r
+                mediaOk = r.ok
+            }
+
+            // 机器可判定的结果行（上层据此判成功，不靠 ✅ 子串）
+            appendLine("RESULT_OK=$mediaOk")
             appendLine()
-            appendLine(if (reports.any { it.ok }) "结果: 成功" else "结果: 全部通道失败")
+            reports.forEach { appendLine(it.toText()) }
+            if (pinMedia && !mediaOk) {
+                appendLine()
+                appendLine(
+                    "说明：媒体音频固定失败。可能是该系统不接受该设备作为策略首选设备" +
+                        "（例如蓝牙 A2DP 需要正确的 AudioDeviceAttributes 类型/地址）。",
+                )
+            }
             appendLine()
             appendLine("—— 写入后实际路由 ——")
             appendLine("media: ${audioController.currentMediaOutput()?.let { "id=${it.id} type=${it.type}" } ?: "(读不到)"}")
@@ -336,11 +371,20 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
 
     override fun clearAudioOutputPreference(): String = clean(buildString {
         appendLine("清除本应用设置的音频输出偏好")
-        audioController.unpinMediaOutput().forEach { appendLine(it.toText()) }
+        val reports = audioController.unpinMediaOutput()
+        // 成功判定的唯一依据：读回验证那条报告（不再无条件返回成功 —— 审计 F7）
+        val cleared = reports.any { it.channel == "读回验证" && it.ok }
+        appendLine("RESULT_OK=$cleared")
+        appendLine()
+        reports.forEach { appendLine(it.toText()) }
         appendLine()
         appendLine("—— 清除后实际路由 ——")
         appendLine("media: ${audioController.currentMediaOutput()?.let { "id=${it.id} type=${it.type}" } ?: "(读不到)"}")
         appendLine("comm: ${audioController.currentCommunicationOutput()}")
+        if (!cleared) {
+            appendLine()
+            appendLine("注意：仍检测到首选设备残留，系统音频状态可能未完全恢复。重启设备一定能恢复。")
+        }
     })
 
     // ------------------------------------------------------------------
@@ -354,12 +398,15 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     override fun setExtendMode(externalDisplayId: Int): String = clean(buildString {
         appendLine("把外接屏 displayId=$externalDisplayId 切到「扩展」模式")
         appendLine("uid=${android.os.Process.myUid()}")
+        // 用明确的机器可判定标记，而不是靠 ✅ 子串（信息行也会带 ✅，会污染判定）
+        val result = mirrorController.applyExtendMode(externalDisplayId)
+        appendLine("RESULT_OK=${result.ok}")
         appendLine()
-        mirrorController.applyExtendMode(externalDisplayId).forEach { appendLine(it.toText()) }
+        appendLine("信息：${result.info}")
+        appendLine(result.report.toText())
         appendLine()
-        appendLine("—— 读回状态 ——")
         appendLine(
-            "windowingMode = " +
+            "读回 windowingMode = " +
                 (mirrorController.getWindowingMode(externalDisplayId)?.let {
                     DisplayMirrorController.windowingModeName(it)
                 } ?: "(读不到)"),

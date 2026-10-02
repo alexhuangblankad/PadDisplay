@@ -253,6 +253,16 @@ object ShizukuManager {
     private val _lastServiceReport = MutableStateFlow("")
     val lastServiceReport: StateFlow<String> = _lastServiceReport.asStateFlow()
 
+    /**
+     * UserService 成功连接的次数（每次连上 +1）。
+     *
+     * 用途：让上层在**每一次**连接建立时都做一遍状态自愈
+     * （尤其是清除可能残留的系统音频固定）。
+     * 审计建议：不能只在 App 启动时清一次，因为授权往往发生在启动之后。
+     */
+    private val _connectEpoch = MutableStateFlow(0)
+    val connectEpoch: StateFlow<Int> = _connectEpoch.asStateFlow()
+
     private val serviceConnection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
             Log.i(TAG, "UserService 已连接")
@@ -287,6 +297,8 @@ object ShizukuManager {
                 shellUid = PROCESS_UID_SHELL,
                 serviceUid = uid,
             )
+            // 通知上层：这是一个新的连接会话，可以执行状态自愈
+            _connectEpoch.value = _connectEpoch.value + 1
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {

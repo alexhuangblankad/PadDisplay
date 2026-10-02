@@ -97,22 +97,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // 音频状态自愈（非常重要，防止「卸载后声音还是坏的」）
         //
         // 音频的「首选设备」偏好是写在系统 AudioService 策略状态里的，
-        // 它会比 App 活得更久 —— 用户卸载 App 也不会自动清掉。
+        // 它会比 App 活得更久 —— 用户卸载 App 也不会自动清掉，只有重启才恢复。
         // 这既有可能是用户现在遇到的音频异常的成因，也是我们必须避免的副作用。
         //
-        // 因此采取「不跨会话残留」策略：
-        //   App 每次启动都把本应用可能设置过的音频偏好清掉，交回系统自动路由。
-        //   用户想在本次会话里固定输出，就在界面上显式点一次。
-        //   这样最坏情况下（App 被杀 / 被卸载）系统的音频状态一定是干净的。
+        // 因此采取「不跨会话残留」策略：App 每次启动都清除本应用可能设置过的
+        // 音频偏好，交回系统自动路由。
+        //
+        // ⚠️ 审计 F8：这里必须**带重试**。早先版本只 delay(2500) 试一次，
+        // 而 Shizuku 授权通常需要用户手动操作，2.5 秒内根本连不上，
+        // 于是清除永远没执行 —— 那就等于没有任何保障。
+        // 现在与内屏自检一样：循环等待 Shizuku 就绪，直到成功或次数用尽。
         // ================================================================
         viewModelScope.launch {
-            delay(2500)
-            if (ShizukuManager.state.value.canControl) {
-                appendLog("启动自愈：清除上一次会话可能留下的音频输出固定")
+            for (attempt in 1..12) {
+                delay(if (attempt == 1) 1500 else 1500)
+                if (!ShizukuManager.state.value.canControl) continue
+
+                appendLog("启动自愈（第 $attempt 次）：清除上一次会话可能留下的音频输出固定")
                 val r = systemService.clearAudioOutputPreference()
-                appendLog("启动自愈结果：${r.toText().replace("\n", " / ")}")
-                refreshAudio()
+                if (r.ok) {
+                    appendLog("启动自愈成功：系统音频已交回自动路由")
+                    refreshAudio()
+                    return@launch
+                }
+                appendLog("启动自愈未成功：${r.toText().replace("\n", " / ")}")
             }
+            appendLog("警告：启动自愈未能清除音频固定（Shizuku 可能一直未就绪）")
         }
 
         // 崩溃/异常退出后的安全兜底。
@@ -155,6 +165,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             ShizukuManager.state.collect { st ->
                 _ui.value = _ui.value.copy(shizuku = st)
                 appendLog("Shizuku: ${st.stage} - ${st.message}")
+            }
+        }
+        // 每一次 UserService 连接建立，都做一遍音频状态自愈。
+        // 授权通常发生在 App 启动之后，只靠启动时清一次是不够的。
+        viewModelScope.launch {
+            ShizukuManager.connectEpoch.collect { epoch ->
+                if (epoch <= 0) return@collect
+                appendLog("检测到 Shizuku 新连接（第 $epoch 次），清除可能残留的音频固定")
+                val r = systemService.clearAudioOutputPreference()
+                appendLog(if (r.ok) "音频自愈成功" else "音频自愈未成功：${r.title}")
+                refreshAudio()
             }
         }
     }
@@ -235,7 +256,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 return@launch
             }
             _ui.value = _ui.value.copy(busy = true)
-            val r = systemService.setAudioOutputDevice(id, pinMedia = pinMedia, pinComm = true)
+            val r = systemService.setAudioOutputDevice(id, pinMedia = pinMedia, pinComm = false)
             _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
             appendLog("切换音频输出 -> deviceId=$id: ${r.toText().replace("\n", " / ")}")
             delay(600)

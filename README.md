@@ -193,6 +193,56 @@ powershell -ExecutionPolicy Bypass -File tools/verify-aidl-codes.ps1
 > 而症状都是「transact 成功但什么都没做」。
 > 所以现在所有 code 都必须经过编译器验证，不再靠文本解析器或手算。
 
+### 4.3.4 「成功」的判定方式（踩过的坑）
+
+早期版本用**输出文本里有没有 `✅` 或「结果: 成功」**来判断操作是否成功。
+这出过假成功：某些信息性输出本身带 `✅`（例如"当前 windowingMode = ✅…"），
+于是即使真正要做的 `set` 完全没生效，上层也判定为成功 ——
+典型的"静默失败却报成功"。
+
+现在统一改成：UserService 输出一行**机器可判定**的结果标记
+
+```
+RESULT_OK=true     /     RESULT_OK=false
+```
+
+上层只认这一行；所有 `✅` 前缀仅用于人类阅读，不参与任何判定。
+
+### 4.3.5 音频主通道：反射 `AudioManager`，而不是手搓 AIDL
+
+音频的媒体路由**首选**反射调用 `AudioManager` 的隐藏方法
+（`setPreferredDevicesForStrategy` / `getPreferredDevicesForStrategy` /
+`removePreferredDevicesForStrategy`），策略对象来自
+`AudioProductStrategy.getAudioProductStrategies()` 并按 `getName() == "STRATEGY_MEDIA"`
+匹配（`AudioProductStrategy` 里**没有** `AUDIO_STRATEGY_MEDIA` 这个 Java 常量，
+媒体策略 id 是 ROM audio policy 配置里的序号）。
+
+**为什么这是主通道**：手搓 transaction 需要同时赌对
+①方法序号 ②Parcel 编组 ③列表读取格式 —— 三处任一错都会静默失效。
+直接调用 framework 自己的方法，把这三件事交回 AOSP 保证。
+手搓 AIDL 仅作为兜底，且无论走哪条通道，最终都以**读回验证**为准。
+
+> ⚠️ 已知的不确定点：`IAudioService` 兜底通道的 API 35 值，
+> 本项目用真实编译器得到 `setPreferredDevicesForStrategy = 144`，
+> 而独立审计（文本解析）得到 `145`。目标是 API 36（ColorOS 16），
+> 该版本两者一致（153）。API 35 分支属兜底路径，且有读回验证兜住，
+> 不会造成静默错误。**目标设备上以反射主通道为准。**
+
+### 4.3.6 音频安全：不跨会话残留
+
+音频的「首选设备」偏好写在系统 `AudioService` 策略状态里，**比 App 活得更久**
+（卸载 App 不会清除，重启才恢复）。为把副作用降到最低：
+
+1. **每一次** Shizuku 连接建立时都清除一次（不只是 App 启动时清）
+2. App 启动自愈带**重试**（循环等 Shizuku 就绪，最多 12 次）——
+   授权往往发生在启动之后，只清一次等于没清
+3. **拔掉外接屏时自动清除**
+4. 媒体目标**只动媒体**，不再偷偷退化去改通话音频（那会造成"报成功但媒体没动"）
+5. 清除操作的成功与否**由读回验证决定**，不再无条件返回成功
+6. 只写首选设备偏好，**不碰音量 / force-use / 设备连接状态**
+
+> 万一系统音频真的卡住，**重启设备一定能恢复**。
+
 ### 4.4 关屏通道优先级（ColorOS 兼容层）
 
 ```
@@ -368,8 +418,9 @@ getWindowingMode(displayId) 读回验证
 
 | 通道 | API | 权限 | 能力 |
 |---|---|---|---|
-| 1 | `AudioManager.setCommunicationDevice()` | 无（公共） | 只能影响通话音 |
-| 2 | `IAudioService.setPreferredDevicesForStrategy()` | `MODIFY_AUDIO_ROUTING`（shell 持有） | **固定媒体音频输出 ← 真正的解** |
+| 1（首选） | 反射 `AudioManager.setPreferredDevicesForStrategy()` | `MODIFY_AUDIO_ROUTING`（shell 持有） | **固定媒体音频输出 ← 真正的解** |
+| 2（兜底） | `IAudioService.setPreferredDevicesForStrategy()` | 同上 | 主通道不可用时才走 |
+| 3（公共） | `AudioManager.setCommunicationDevice()` | 无 | 只能影响**通话音** |
 
 界面提供：
 

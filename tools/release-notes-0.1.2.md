@@ -1,0 +1,79 @@
+v0.1.2: 修复音频设备标识错误（此前蓝牙/显示器路线必然失败）与多处假成功
+
+## CRITICAL 修复
+
+### 1. 音频设备标识用错构造器 —— 此前蓝牙耳机路线必然失败
+
+`AudioDeviceAttributes(int type, String address)` 的第一个参数是**原生设备类型**
+（`DEVICE_OUT_*`），不是 SDK 的 `AudioDeviceInfo.TYPE_*`。传 SDK 类型会经过
+native→SDK 映射：
+
+- 内置扬声器(2) 碰巧对上 → 能成功
+- **蓝牙 A2DP(8) 撞上 DEVICE_OUT_WIRED_HEADPHONE** → 变成"有线耳机带蓝牙 MAC"
+- HDMI(9) / USB(11) → `TYPE_UNKNOWN` → 被 `areAllDevicesSupported()` 拒绝
+
+**后果：核心需求「一线连显示器时声音留给蓝牙耳机」根本不可能生效，
+只有钉内置扬声器能成。**
+
+现在改用 `AudioDeviceAttributes(AudioDeviceInfo)` 这个 @SystemApi 构造器，
+由 framework 自己把 role / type / address / name / nativeType 全部填对。
+
+### 2. 「扩展模式」永远报告成功
+
+`applyExtendMode` 里塞了一条信息性输出 `Report(true, "当前 windowingMode", …)`，
+上层用 `contains("✅")` 判成功时**永远为真** —— 即使真正要做的
+`setWindowingMode` 完全没生效，界面也会说"已切换到扩展模式"。
+
+现在把「信息性输出」与「结果判定」彻底分开，只用机器可判定的
+`RESULT_OK=` 标记决定成败。
+
+### 3. 音频策略匹配与列表读取
+
+- `AudioProductStrategy` 里**没有** `AUDIO_STRATEGY_MEDIA` 这个 Java 常量
+  （媒体策略 id 是 ROM audio policy 配置里的序号）。改为按
+  `getName() == "STRATEGY_MEDIA"` 匹配，再用 `supportsAudioAttributes()` 兜底。
+- 列表读取格式修正：AOSP `writeTypedList` 是 `[count]` + count × `[1][payload]`，
+  原先多读了一个 `present` 标记，导致 `N>=2` 时**静默截断为第一个元素**
+  （这正是上面策略匹配失效的原因）。
+
+## 结构性改进
+
+**音频主通道改为反射 `AudioManager` 的隐藏方法**，不再手搓 transaction：
+
+| 通道 | 说明 |
+|---|---|
+| 1（首选） | 反射 `AudioManager.set/get/removePreferredDevicesForStrategy` + `AudioProductStrategy.getAudioProductStrategies()` |
+| 2（兜底） | 手搓 `IAudioService` transaction |
+| 3（公共） | `AudioManager.setCommunicationDevice()`（只能影响通话音） |
+
+手搓 transaction 要同时赌对「方法序号 / Parcel 编组 / 列表格式」三件事，
+任一错都静默失效；直接调用 framework 自己的方法把这三件事交回 AOSP 保证。
+
+## 其它修复
+
+- **消除「假成功」判定**：显示器侧与音频侧全部改用 `RESULT_OK=` 标记，
+  不再依赖 `✅` 或「结果: 成功」子串。
+- **音频自愈加重试**：原来只在启动后 2.5 秒试一次，而 Shizuku 授权通常发生在
+  启动之后，等于永远没清。现在循环等 Shizuku 就绪（最多 12 次），
+  并在**每一次** UserService 连接建立时都清一次。
+- **清除操作不再无条件返回成功**：由读回验证决定，用户能真正知道撤销是否生效。
+- **媒体目标只动媒体**：不再在媒体失败时偷偷改通话音频（那会造成
+  "报成功但媒体没动"，甚至把通话音频送到显示器）。
+- **`isDisplayLike` 不再误判 USB 耳机**：USB-C 转 3.5mm / USB 耳麦现在能被正确选中。
+- **主线程 Binder 调用移出主线程**（音频设备枚举）。
+- 删除两个写错且未使用的 `IAudioService` comm-device code。
+
+## 关于 transaction code 的一个诚实说明
+
+`IAudioService` 兜底通道的 **API 35** 值：本项目用真实编译器得到
+`setPreferredDevicesForStrategy = 144`，而独立审计（文本解析）得到 `145`。
+
+- 目标设备是 API 36（ColorOS 16），该版本两者一致（153），已逐条验证。
+- 本项目手工核对过 AIDL 方法名抽取结果：276 个方法名、无重复、无嵌套 interface。
+- API 35 分支属兜底路径，且有读回验证兜住，不会造成静默错误。
+
+`tools/verify-aidl-codes.ps1` 可随时复核（用真实 `aidl.exe` 编译同序骨架）。
+
+## 安装
+
+下载下方 APK 直接安装（覆盖升级即可，签名不变）。

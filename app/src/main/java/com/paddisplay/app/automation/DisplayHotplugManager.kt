@@ -129,7 +129,11 @@ class DisplayHotplugManager(
      * 若没有 Shizuku 权限，会退化成只固定通话音，并如实记录失败原因。
      */
     private suspend fun applyAudioProtection() {
-        val outputs = systemService.audio.availableOutputs()
+        // 审计 F11：AudioManager.getDevices / getAudioDevicesForAttributes 都是
+        // 同步 Binder 调用，不能放在 Main.immediate 上（有 ANR / StrictMode 风险）。
+        val outputs = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            systemService.audio.availableOutputs()
+        }
         if (outputs.isEmpty()) {
             log("音频保护：读不到输出设备列表，跳过")
             return
@@ -146,14 +150,22 @@ class DisplayHotplugManager(
             return
         }
 
-        val current = systemService.audio.currentMediaOutput()
+        val current = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            systemService.audio.currentMediaOutput()
+        }
         if (current != null && current.id == chosen.id) {
             log("音频保护：媒体音频已经在「${chosen.typeName}」，无需处理")
             return
         }
 
-        log("音频保护：把媒体音频从「${current?.let { com.paddisplay.app.system.AudioRoutingController.typeLabel(it.type) } ?: "未知"}」切到「${chosen.typeName}」")
-        val r = systemService.setAudioOutputDevice(chosen.id, pinMedia = true, pinComm = true)
+        log(
+            "音频保护：把媒体音频从「" +
+                (current?.let { com.paddisplay.app.system.AudioRoutingController.typeLabel(it.type) } ?: "未知") +
+                "」切到「${chosen.typeName}」",
+        )
+        // alsoPinCommunication 保持 false：媒体目标就只动媒体。
+        // 审计 F6：以前媒体失败时会偷偷改通话音频，导致"报成功但媒体没动"。
+        val r = systemService.setAudioOutputDevice(chosen.id, pinMedia = true, pinComm = false)
         log("音频保护结果：${r.toText().replace("\n", " / ")}")
     }
 

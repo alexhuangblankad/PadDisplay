@@ -218,7 +218,7 @@ class SystemDisplayService(
         runCatching {
             val out = svc.setDisplayPowerMode(displayId, powerMode)
             // UserService 在任一通道成功时会输出「结果: 成功（通道 …）」
-            val ok = out.contains("结果: 成功")
+            val ok = out.contains("RESULT_OK=true")
             OpResult(
                 ok = ok,
                 title = (if (powerMode == POWER_OFF) "关闭 " else "打开 ") + roleText,
@@ -262,7 +262,7 @@ class SystemDisplayService(
 
         lines += "— 真实 Mode 切换 —"
         lines += modeOut.lines().filter { it.isNotBlank() }
-        val modeOk = modeOut.contains("结果: 成功")
+        val modeOk = modeOut.contains("RESULT_OK=true")
 
         if (modeOk) {
             return@withContext OpResult(true, "外接屏已切到 ${mode.label}", lines)
@@ -277,7 +277,7 @@ class SystemDisplayService(
             }.getOrElse { "调用失败: ${Reflect.describe(it)}" }
             lines += sizeOut.lines().filter { it.isNotBlank() }
             // 只有 UserService 明确报告成功才算成功，不能因为文本里含「修改后」就判定成功
-            val sizeOk = sizeOut.contains("✅")
+            val sizeOk = sizeOut.contains("RESULT_OK=true")
             return@withContext OpResult(
                 ok = sizeOk,
                 title = if (sizeOk) {
@@ -313,7 +313,7 @@ class SystemDisplayService(
         if (svc == null) return@withContext err!!
         runCatching {
             val out = svc.clearForcedDisplaySize(displayId)
-            val ok = out.contains("✅")
+            val ok = out.contains("RESULT_OK=true")
             OpResult(ok, if (ok) "已清除 displayId=$displayId 的逻辑尺寸覆盖" else "清除失败", out.lines().filter { it.isNotBlank() })
         }.getOrElse { OpResult(false, "清除失败", listOf(Reflect.describe(it))) }
     }
@@ -342,7 +342,7 @@ class SystemDisplayService(
             if (svc == null) return@withContext err!!
             runCatching {
                 val out = svc.setForcedDisplaySize(displayId, width, height)
-                val ok = out.contains("✅")
+                val ok = out.contains("RESULT_OK=true")
                 OpResult(
                     ok,
                     if (ok) "已回滚 displayId=$displayId 到 ${width}x$height" else "回滚失败",
@@ -380,8 +380,12 @@ class SystemDisplayService(
             if (svc != null) {
                 runCatching {
                     val out = svc.setAudioOutputDevice(deviceId, pinMedia, pinComm)
-                    val ok = out.contains("结果: 成功")
-                    OpResult(ok, if (ok) "音频输出已切换" else "音频输出切换失败", out.lines().filter { it.isNotBlank() })
+                    val ok = out.contains("RESULT_OK=true")
+                    OpResult(
+                        ok,
+                        if (ok) "音频输出已切换" else "音频输出切换失败",
+                        out.lines().filter { it.isNotBlank() },
+                    )
                 }.getOrElse { OpResult(false, "调用 UserService 失败", listOf(Reflect.describe(it))) }
             } else {
                 // 没有 Shizuku 时退回公共 API（只能改通话音）
@@ -394,17 +398,23 @@ class SystemDisplayService(
             }
         }
 
-    /** 清除音频输出偏好，恢复系统自动路由。 */
+    /** 清除音频输出偏好，恢复系统自动路由。判定以 UserService 的读回验证为准。 */
     suspend fun clearAudioOutputPreference(): OpResult = withContext(Dispatchers.IO) {
         val svc = service()
         if (svc != null) {
             runCatching {
                 val out = svc.clearAudioOutputPreference()
-                OpResult(true, "已清除音频输出偏好", out.lines().filter { it.isNotBlank() })
+                // 审计 F7：原来这里无条件返回成功，用户无法判断"撤销"是否真的生效
+                val ok = out.contains("RESULT_OK=true")
+                OpResult(
+                    ok,
+                    if (ok) "已清除音频输出偏好" else "清除未完全生效（系统可能仍有残留）",
+                    out.lines().filter { it.isNotBlank() },
+                )
             }.getOrElse { OpResult(false, "清除失败", listOf(Reflect.describe(it))) }
         } else {
             val r = audio.clearCommunicationOutput()
-            OpResult(r.ok, "已清除通话音频偏好", listOf(r.toText()))
+            OpResult(r.ok, if (r.ok) "已清除通话音频偏好" else "清除失败", listOf(r.toText()))
         }
     }
 
@@ -429,7 +439,9 @@ class SystemDisplayService(
         if (svc == null) return@withContext err!!
         runCatching {
             val out = svc.setExtendMode(externalDisplayId)
-            val ok = out.contains("✅")
+            // 用 UserService 给出的机器可判定标记，不用 ✅ 子串
+            // （信息性输出也可能带 ✅，那正是审计 F2 里"永远成功"的根源）
+            val ok = out.contains("RESULT_OK=true")
             OpResult(ok, if (ok) "已切换到扩展模式" else "切换扩展模式失败", out.lines().filter { it.isNotBlank() })
         }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
     }

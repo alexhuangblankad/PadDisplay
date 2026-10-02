@@ -152,25 +152,36 @@ class DisplayMirrorController(
      * 切换到「扩展」模式：把外接屏设为独立的 FULLSCREEN display。
      *
      * 这是 per-display 的设置，只写外接屏，不碰内屏。
-     * 切换后主屏（内屏）内容不变，外接屏成为一块独立屏幕，
-     * 可以把应用拖过去 / 用 `am start --display` 启动到外屏。
+     *
+     * ⚠️ 关于"成功"的判定（审计 F2）：
+     * 早先版本在这里无条件塞了一条 `Report(true, "当前 windowingMode", …)`
+     * 作为信息展示，结果上层用 `contains("✅")` 判成功时**永远为真**，
+     * 即使真正要做的 set 完全没生效 —— 典型的"静默失败却报成功"。
+     *
+     * 现在把「信息性输出」与「结果判定」彻底分开：
+     * - 信息性输出只放在 [info]，不参与成功判定；
+     * - 只有 [setWindowingMode] 返回的那条报告才决定成败。
      */
-    fun applyExtendMode(externalDisplayId: Int): List<Report> {
-        val reports = mutableListOf<Report>()
-        val current = getWindowingMode(externalDisplayId)
-        reports += Report(
-            true,
-            "当前 windowingMode",
-            current?.let { windowingModeName(it) } ?: "(读不到，需要 Shizuku)",
-        )
-        // 已经是 FULLSCREEN 就无需再写（避免无意义的重配置触发音频/显示重算）
-        if (current == WINDOWING_MODE_FULLSCREEN) {
-            reports += Report(true, "扩展模式", "外接屏已经是独立的 FULLSCREEN 屏幕，无需修改")
-            return reports
+    fun applyExtendMode(externalDisplayId: Int): ExtendResult {
+        val before = getWindowingMode(externalDisplayId)
+        val info = "切换前 windowingMode = " +
+            (before?.let { windowingModeName(it) } ?: "(读不到，可能没有 Shizuku 权限)")
+
+        // 已经是 FULLSCREEN 就无需再写，避免无意义的重配置触发音频/显示重算
+        if (before == WINDOWING_MODE_FULLSCREEN) {
+            return ExtendResult(
+                ok = true,
+                report = Report(true, "扩展模式", "外接屏已经是独立的 FULLSCREEN 屏幕，无需修改"),
+                info = info,
+            )
         }
-        reports += setWindowingMode(externalDisplayId, WINDOWING_MODE_FULLSCREEN)
-        return reports
+
+        val report = setWindowingMode(externalDisplayId, WINDOWING_MODE_FULLSCREEN)
+        return ExtendResult(ok = report.ok, report = report, info = info)
     }
+
+    /** 扩展模式切换结果：把结果与信息性输出分开，避免信息行污染成功判定。 */
+    data class ExtendResult(val ok: Boolean, val report: Report, val info: String)
 
     /**
      * 切换到「镜像 / 复制」模式。

@@ -1,49 +1,69 @@
-v0.1.1: 修复 uid 解析 / 修正 AIDL code / 新增音频输出选择与显示模式切换
+v0.1.2: 修复音频设备标识错误（蓝牙/显示器路线必然失败）与多处假成功
 
-## 修复
+## CRITICAL 修复
 
-- **uid=-1（用户可见的误导）**：UserService 返回的首行带 BOM(\uFEFF)，
-  客户端用 `startsWith("uid=")` 永远匹配不上。改为直接问
-  `Binder.getCallingUid()`（权威且不受文本格式影响），
-  并在 UserService 产出侧清掉 BOM / 零宽字符。
-  注意：这只是显示 bug，不影响功能，但它掩盖了真正的报错信息。
+### 1. 音频设备标识用错构造器 —— 蓝牙耳机路线此前必然失败
 
-- **音频 AIDL transaction code 整体差 1**：
-  set/remove/getPreferredDevicesForStrategy 由 154/155/156 修正为 **153/154/155**。
-  差 1 会让调用打到相邻方法上——transact 成功、不抛异常，但什么都没做。
+AudioDeviceAttributes(int type, String address) 的第一个参数是**原生设备类型**
+（DEVICE_OUT_*），不是 SDK 的 AudioDeviceInfo.TYPE_*。传 SDK 类型会被映射错：
 
-- **窗口模式 AIDL code 修正**：getWindowingMode / setWindowingMode
-  由 API34 的 95/96、API35/36 的 96/97 修正为
-  **API34 97/98、API35/36 98/99**。
+- 内置扬声器(2) 碰巧对上 → 能成功
+- 蓝牙 A2DP(8) 撞上 DEVICE_OUT_WIRED_HEADPHONE → 变成"有线耳机带蓝牙 MAC"
+- HDMI(9) / USB(11) → TYPE_UNKNOWN → 被 areAllDevicesSupported() 拒绝
 
-## 新增
+后果：核心需求「一线连显示器时声音留给蓝牙耳机」根本不可能生效，
+只有钉内置扬声器能成。现在改用 AudioDeviceAttributes(AudioDeviceInfo)
+这个 @SystemApi 构造器，由 framework 填对 role / type / address / name / nativeType。
 
-- **音频输出选择**（对应用户痛点：一线连显示器后蓝牙耳机没声）
-  - 枚举所有音频输出，标出「当前媒体输出」与「显示器类」设备
-  - 「设为音频输出」用 `IAudioService.setPreferredDevicesForStrategy`
-    固定**媒体**音频输出；公共 API `AudioManager.setCommunicationDevice` 兜底
-  - 「恢复自动」一键清除
-  - 开关「接入外屏时自动把声音留在平板侧」（默认开启，优先耳机其次扬声器）
+### 2. 「扩展模式」永远报告成功
 
-- **音频状态卫生（不跨会话残留）**
-  - App 启动自愈：先清除上次会话可能留下的音频固定
-  - 拔掉外接屏时自动清除
-  - 只写 AOSP 首选设备偏好，不碰音量 / force-use / 设备连接状态
-  - 每次写入后立刻读回验证，不一致就报失败
+applyExtendMode 里塞了一条信息性输出 Report(true, "当前 windowingMode", …)，
+上层用 contains("✅") 判成功时永远为真 —— 即使真正要做的 setWindowingMode
+完全没生效，界面也会说"已切换到扩展模式"。
+现在把信息性输出与结果判定彻底分开，只用机器可判定的 RESULT_OK= 标记决定成败。
 
-- **外接屏显示模式：扩展 / 复制 / 仅外接屏**
-  - 扩展：per-display `setWindowingMode(FULLSCREEN)` 打破镜像，读回验证
-  - 复制：如实说明 Android 14+ 已移除强制镜像 API（`setDisplayIdToMirror`
-    在 API 34/35/36 的 AIDL 里都不存在），不冒险硬做
-  - 仅外接屏：关闭内屏 panel
+### 3. 音频策略匹配与列表读取
 
-- **tools/verify-aidl-codes.ps1**：用真实 `aidl.exe` 编译同序骨架 AIDL，
-  读编译器写出的 `TRANSACTION_* = FIRST_CALL_TRANSACTION + n`，
-  一条命令复核所有 transaction code。
+- AudioProductStrategy 里没有 AUDIO_STRATEGY_MEDIA 这个 Java 常量
+  （媒体策略 id 是 ROM audio policy 配置里的序号）。
+  改为按 getName() == "STRATEGY_MEDIA" 匹配，再用 supportsAudioAttributes() 兜底。
+- 列表读取格式修正：AOSP writeTypedList 是 [count] + count × [1][payload]，
+  原先多读一个 present 标记，导致 N>=2 时静默截断为第一个元素
+  （这正是上面策略匹配失效的原因）。
 
-## 验证
+## 结构性改进
 
-所有 transaction code 已用真实编译器逐条验证：
-IDisplayManager / IWindowManager / IAudioService × API 34/35/36。
-本项目在 code 上踩过两次「整体差 1」的坑，症状都是静默失效，
-因此新增的验证脚本会在 README 中说明为强制流程。
+音频主通道改为反射 AudioManager 的隐藏方法，不再手搓 transaction：
+- 首选：反射 AudioManager.set/get/removePreferredDevicesForStrategy
+  + AudioProductStrategy.getAudioProductStrategies()
+- 兜底：手搓 IAudioService transaction
+- 公共：AudioManager.setCommunicationDevice()（只能影响通话音）
+
+手搓 transaction 要同时赌对「方法序号 / Parcel 编组 / 列表格式」三件事，
+任一错都静默失效；直接调用 framework 自己的方法把这三件事交回 AOSP 保证。
+
+## 其它修复
+
+- 消除假成功判定：显示器侧与音频侧全部改用 RESULT_OK= 标记，
+  不再依赖 ✅ 或「结果: 成功」子串。
+- 音频自愈加重试：原来只在启动后 2.5 秒试一次，而 Shizuku 授权通常发生在
+  启动之后，等于永远没清。现在循环等 Shizuku 就绪（最多 12 次），
+  并在每一次 UserService 连接建立时都清一次。
+- 清除操作不再无条件返回成功：由读回验证决定。
+- 媒体目标只动媒体：不再在媒体失败时偷偷改通话音频。
+- isDisplayLike 不再误判 USB 耳机：USB-C 转 3.5mm / USB 耳麦现在能被正确选中。
+- 主线程 Binder 调用移出主线程（音频设备枚举）。
+- 删除两个写错且未使用的 IAudioService comm-device code。
+
+## 关于 transaction code 的诚实说明
+
+IAudioService 兜底通道的 API 35 值：本项目用真实编译器得到
+setPreferredDevicesForStrategy = 144，独立审计（文本解析）得到 145。
+目标设备是 API 36（ColorOS 16），该版本两者一致（153）且已逐条验证。
+本项目手工核对过 AIDL 方法名抽取：276 个方法名、无重复、无嵌套 interface。
+API 35 分支属兜底路径且有读回验证兜住，不会造成静默错误。
+tools/verify-aidl-codes.ps1 可随时复核。
+
+## 安装
+
+下载下方 APK 直接安装（覆盖升级即可，签名不变）。
