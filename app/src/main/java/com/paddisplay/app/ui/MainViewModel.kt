@@ -605,6 +605,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
     // ------------------------------------------------------------------
+    // MouseFlow 第一轮实验
+    // ------------------------------------------------------------------
+
+    /** 探测原生鼠标光标所在屏（MouseFlow 实验第一步）。 */
+    fun probePointerDisplay() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val text = systemService.probePointerDisplay()
+            _ui.value = _ui.value.copy(
+                busy = false,
+                diagnostics = "=========== MouseFlow 探测 ===========\n\n$text",
+                showDiagnostics = true,
+            )
+            appendLog("已探测原生指针所在屏")
+        }
+    }
+
+    /** 强制把指针切到某块屏（第一轮实验的关键按钮）。 */
+    fun forcePointer(target: DesktopTarget) {
+        viewModelScope.launch {
+            val d = when (target) {
+                DesktopTarget.INTERNAL -> systemService.internalDisplay()
+                DesktopTarget.EXTERNAL -> systemService.primaryExternal()
+            }
+            if (d == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 找不到目标显示器")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.forcePointerToDisplay(d.displayId)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("强制指针到 ${target.label}：${r.toText().replace("\n", " / ")}")
+        }
+    }
+    // ------------------------------------------------------------------
     // 桌面模式 / 自由窗口（DeX / TNT 类桌面）
     // ------------------------------------------------------------------
 

@@ -95,6 +95,9 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
             // ============================================================
             // 以下全部收进「高级选项」，默认收起
             // ============================================================
+            // MouseFlow 第一轮实验：原生鼠标光标所在屏
+            item { MouseFlowProbeCard(vm = vm, ui = ui) }
+
             // 桌面模式（DeX / TNT 类桌面）：这是"要一个真正的桌面"的正解
             item { DesktopModeCard(vm = vm, ui = ui) }
 
@@ -223,12 +226,73 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
 }
 
 /**
-/**
- * 触控板入口 —— 「鼠标不能跨屏」的实际替代方案。
+ * MouseFlow 第一轮实验 —— 原生鼠标光标所在 Display。
  *
- * 鼠标自由跨屏依赖 DisplayTopology，而本机该 feature flag 被 ROM 关闭，
- * 非 root 打不开。所以改为：用平板当外接屏的触控板（自绘光标 + 注入指针）。
+ * 任务书要求"先做实验、不要直接写完整功能"，本卡片即为此：
+ * 只提供探测与两个强制切屏按钮，用来验证
+ * "ColorOS + Shizuku 能否让系统原生鼠标从 Display 0 切到外屏"。
+ *
+ * 关键结论（AOSP 16 源码）：
+ * NativeInputManagerService.setPointerDisplayId(int) 存在，但它是
+ * native 本地接口、不是 Binder 服务，全 AOSP 只有一处调用 ——
+ *   IMS.setDisplayViewportsInternal()
+ *     -> mNative.setPointerDisplayId(mWindowManagerCallbacks.getPointerDisplayId())
+ * 即 IMS 主动从 WMS 取值，App/Shizuku 都无从直接设置。
+ *
+ * 真正的开关是 WMS 的 InputManagerCallback.getPointerDisplayId() 读的两个
+ * Global settings：桌面模式 + 自由窗口。
  */
+@Composable
+private fun MouseFlowProbeCard(vm: MainViewModel, ui: MainViewModel.UiState) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer.copy(alpha = 0.22f),
+        ),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                "MouseFlow 实验：原生鼠标光标在哪块屏",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "先探测、再动手。第一步只搞清楚 ColorOS 把原生光标放在哪、为什么。" +
+                    "下面的按钮用注入方式移动指针位置，验证注入这条路是否可用。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = { vm.probePointerDisplay() },
+                enabled = ui.shizuku.canControl && !ui.busy,
+                modifier = Modifier.fillMaxWidth().height(46.dp),
+            ) { Text("探测原生指针所在屏（先点这个）") }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { vm.forcePointer(MainViewModel.DesktopTarget.INTERNAL) },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("强制鼠标到内屏") }
+                OutlinedButton(
+                    onClick = { vm.forcePointer(MainViewModel.DesktopTarget.EXTERNAL) },
+                    enabled = ui.shizuku.canControl && !ui.busy && ui.externalConnected,
+                    modifier = Modifier.weight(1f),
+                ) { Text("强制鼠标到外屏") }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "注：这两个按钮移动的是指针位置（注入）。「光标归属哪块屏」由系统按" +
+                    "桌面模式 + 自由窗口自动决定，不是这里能直接设的。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/**
  * 桌面模式（DeX / TNT 类桌面）—— 「想要一个真正的桌面」的正解。
  *
  * 依据：脚本项目 fox0001/android-desktop-mode 的 README 指出，
@@ -308,7 +372,7 @@ private fun TouchpadEntryCard(ui: MainViewModel.UiState) {
     ) {
         Column(Modifier.padding(14.dp)) {
             Text(
-                "用平板当外接屏的触控板",
+                "用平板当外接屏的触控板（⚠️ 不推荐，会破坏 Moonlight 鼠标）",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
             )

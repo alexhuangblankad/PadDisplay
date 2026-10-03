@@ -650,6 +650,27 @@ class SystemDisplayService(
             }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
         }
     // ------------------------------------------------------------------
+    // MouseFlow 第一轮实验：原生鼠标光标所在 Display
+    // ------------------------------------------------------------------
+
+    /** 探测指针所在屏、枚举物理鼠标、报告依据与异常。 */
+    suspend fun probePointerDisplay(): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.probePointerDisplay() }.getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /** 强制把指针移到指定屏（第一轮实验按钮）。 */
+    suspend fun forcePointerToDisplay(displayId: Int): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+        runCatching {
+            val out = svc.forcePointerToDisplay(displayId)
+            val ok = out.contains("RESULT_OK=true")
+            OpResult(ok, if (ok) "指针已移到 Display $displayId" else "移动失败（详见输出）", out.lines().filter { it.isNotBlank() })
+        }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+    // ------------------------------------------------------------------
     // 桌面模式 / 自由窗口
     // ------------------------------------------------------------------
 

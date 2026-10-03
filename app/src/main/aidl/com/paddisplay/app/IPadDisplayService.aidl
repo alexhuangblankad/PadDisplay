@@ -240,6 +240,26 @@ interface IPadDisplayService {
      */
     String setDesktopMode(boolean enable);
 
+    // ------------------------------------------------------------------
+    // MouseFlow 第一轮实验：原生鼠标光标所在 Display
+    //
+    // NativeInputManagerService.setPointerDisplayId(int) 存在，但它是
+    // native 本地接口、不是 Binder 服务，外部无法直接调用（全 AOSP 只有
+    // IMS.setDisplayViewportsInternal() 一处调用，取值来自 WMS）。
+    //
+    // 真正的开关是 WindowManagerService.InputManagerCallback.getPointerDisplayId()
+    // 读取的两个 Global settings。本组方法用于：
+    //   1. 探测系统会把光标放在哪块屏、依据是什么；
+    //   2. 枚举物理鼠标（含 vendor/product/relative 轴，Moonlight 场景需要）；
+    //   3. 用注入的方式真正移动指针位置，并输出完整异常。
+    // ------------------------------------------------------------------
+
+    /** MouseFlow 实验：探测指针所在屏、枚举鼠标、报告依据与异常。 */
+    String probePointerDisplay();
+
+    /** 强制把指针移到指定屏（第一轮实验的两个按钮用）。 */
+    String forcePointerToDisplay(int displayId);
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 

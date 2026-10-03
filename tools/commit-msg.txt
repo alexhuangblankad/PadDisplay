@@ -1,62 +1,82 @@
-v0.5.0: 桌面模式（DeX / TNT 思路）—— 找到能真正打开它的开关
+v0.6.0: MouseFlow 第一轮实验 —— 查清原生鼠标换屏的真实机制
 
-## 用户思路是对的，之前漏了它
+## 修正上一版的错误结论
 
-参考项目 fox0001/android-desktop-mode 的 README 点明关键：
-从 Android 10 起系统内置「桌面模式」，该模式下 App 可自由拖动位置、调整窗口大小。
-开发者选项里勾选「启用可自由调整的窗口」+「强制使用桌面模式」即可启用。
+上一版说"桌面模式不解决鼠标问题"，是误读了 AOSP 注释。查证结果：
 
-## 关键发现：那两个勾就是 Global settings，Shizuku 能直接写
+### setPointerDisplayId 存在，但外部调不到
 
-AOSP WindowManagerService 里：
-  Settings.Global.DEVELOPMENT_FORCE_DESKTOP_MODE_ON_EXTERNAL_DISPLAYS
-  Settings.Global.DEVELOPMENT_ENABLE_FREEFORM_WINDOWS_SUPPORT
-  Settings.Global.DEVELOPMENT_FORCE_RESIZABLE_ACTIVITIES
+  // NativeInputManagerService（native 本地接口，非 Binder 服务）
+  /** Set the displayId on which the mouse cursor should be shown. */
+  void setPointerDisplayId(int displayId);
 
-WMS 的 SettingsObserver 实时监听：
-  mForceDesktopModeOnExternalDisplaysUri -> updateForceDesktopModeOnExternalDisplays()
-  mFreeformWindowUri -> updateFreeformWindowManagement()
-后者会把 mAtmService.mSupportsFreeformWindowManagement 设为 true。
+全 AOSP 只有一处调用：
+  // InputManagerService.setDisplayViewportsInternal()
+  mNative.setPointerDisplayId(mWindowManagerCallbacks.getPointerDisplayId());
 
-写这两个键 = 帮用户在开发者选项里打勾，不需要 root（WRITE_SECURE_SETTINGS，shell 持有）。
+即 IMS 主动从 WMS 取值。它不是 Binder 服务，App / Shizuku / adb 都无法直接调用。
 
-## 修正我之前的一个武断判断
+### 换屏能力系统自己就会做
 
-此前探测 development_force_desktop_mode_on_external_displays 得到 -999（键不存在），
-我判断为"本机没有这个设置"。实际上：
-  Settings.Global.getInt(resolver, key, 0)   // 默认 0，键不存在也返回 0
-键不存在只说明该开关从没被碰过，不代表不能设置。写入后就会存在。
+取值逻辑 WMS.InputManagerCallback.getPointerDisplayId()：
+  if (!mService.mForceDesktopModeOnExternalDisplays) {
+      return DEFAULT_DISPLAY;                 // 桌面模式没开，光标只在内屏
+  }
+  for (...) {                                  // 找最上层 freeform 显示器
+      if (displayContent.getWindowingMode() == WINDOWING_MODE_FREEFORM) {
+          return displayContent.getDisplayId(); // 原生光标去这块屏
+      }
+  }
+  return firstExternalDisplayId;
 
-## 本版新增「桌面模式」卡片（主界面）
+所以"原生鼠标出现在外接屏"的条件就是那两个 Global settings
+（v0.5.0 已加入的桌面模式 + 自由窗口），不需要 setPointerDisplayId —— 系统自己会调。
 
-- 探测桌面模式能力：列出 5 个 Global settings 当前值、系统 feature 能力、参考实现做法
-- 开启/关闭桌面模式：写入并读回验证
-- 提示写入后通常需重新插拔外接屏或重启才完全生效
+## 本版新增 MouseFlow 实验卡片
 
-## 关于鼠标的诚实说明
+按任务书要求：先做实验，不直接写完整功能。
 
-AOSP WindowManagerService 中该字段注释原文：
-  - Enable system decorations and IME on external screen.
-  - TODO: Show mouse pointer on external screen.
-即 Android 官方在桌面模式里都还没做「在外接屏显示鼠标指针」。
+- 探测原生指针所在屏：按 AOSP 同一套逻辑推演系统会把光标放哪及依据；
+  枚举物理鼠标（Device ID / Name / Sources / Vendor / Product /
+  External / AssocDisplayId / RelativeAxes）；打印各屏 windowingMode；
+  给出 ADB 辅助诊断命令
+- 强制鼠标到内屏 / 强制鼠标到外屏：用 injectInputEvent + setDisplayId 移动指针位置，
+  坐标从 dumpsys window displays 的 cur=WxH 取，取不到就拒绝盲猜
+- 失败时输出完整异常（SecurityException / RemoteException /
+  NoSuchMethodException / Binder 错误）
 
-因此：
-- 外接屏成为真正的桌面（自由窗口、可拖动缩放）：能，这正是其用途
-- 外接屏有系统装饰与输入法：能
-- 鼠标指针显示在外接屏：AOSP 自己仍是 TODO
-- 鼠标跨两块屏：需要 DisplayTopology，本机被关闭
+## 按任务书调整方案优先级
 
-不会宣称"开了桌面模式鼠标就能跨屏"。
+接受"自绘假光标 + 注入会破坏 Moonlight"的判断：
+- pointer capture / relative mouse mode：注入事件不是真实指针事件
+- hover：系统不给注入事件点亮指针
+- 滚轮 / 右键 / 游戏鼠标：自绘光标不参与系统指针语义
+
+触控板已降级标注为"不推荐"并写明会破坏什么，推荐路线改为桌面模式 + MouseFlow。
 
 ## 新增/修改文件
 
-- IPadDisplayService.aidl：probeDesktopMode / setDesktopMode
-- PadDisplayUserService.kt：5 个 Global settings 的读写与读回验证
-- SystemDisplayService.kt / MainViewModel.kt：对应封装
-- MainScreen.kt：DesktopModeCard（放在主界面）
+- system/PointerDisplayController.kt（新）：鼠标枚举、AOSP 同构推演、
+  指针移动、完整异常输出
+- IPadDisplayService.aidl：probePointerDisplay / forcePointerToDisplay
+- PadDisplayUserService.kt：实现 + dumpsys 解析 windowingMode
+- SystemDisplayService.kt / MainViewModel.kt：封装
+- MainScreen.kt：MouseFlowProbeCard；触控板卡片降级标注
+
+## 测试顺序（本轮唯一关键问题）
+
+1. 连外接屏 -> 一键开始
+2. MouseFlow 实验 -> 探测原生指针所在屏（发回输出）
+3. 桌面模式 -> 开启桌面模式
+4. 重新插拔外接屏（必须，系统才会重算指针归属）
+5. 看物理鼠标是否出现在外接屏上
+
+第 5 步即任务书 Test A/B。成功则说明 ColorOS 底层 Pointer Routing 存在，
+下一步才做边缘自动跨屏（edgeThreshold + switchCooldown，纯逻辑问题）。
 
 ## 说明
 
-依然没有真机验证。本版依据 AOSP 源码与参考项目 README 实现。
-若开启后桌面形态未出现，需看探测输出判断是哪一层挡住：
-键写入失败（ROM 限制），或 config_isDesktopModeSupported=false 导致自由窗口未真正打开。
+- 依然没有真机验证。
+- 本轮未实现自动边缘跨屏，按任务书第十八条只做第一轮实验。
+- 若第 5 步失败，需看探测输出判断断点：键写不进去（ROM 限制）、
+  副屏未进 freeform、还是指针被强制留在内屏。

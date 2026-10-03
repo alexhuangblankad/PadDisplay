@@ -857,6 +857,133 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     })
 
     // ------------------------------------------------------------------
+    // MouseFlow 第一轮实验：原生鼠标光标所在 Display
+    // ------------------------------------------------------------------
+
+    private val pointerController: PointerDisplayController by lazy {
+        PointerDisplayController(
+            inputManagerBinder = PhysicalDisplayAccess.inputManagerBinder(),
+            shellRunner = ::execRaw,
+        )
+    }
+
+    /** 从 `dumpsys display` 取每块屏的 windowingMode（AOSP 判据需要它）。 */
+    private fun windowingModesFromDumpsys(): Map<Int, Int> {
+        val dump = execRaw("/system/bin/dumpsys display")
+        val result = mutableMapOf<Int, Int>()
+        var currentId: Int? = null
+        dump.lines().forEach { line ->
+            Regex("""displayId[= ](\d+)""").find(line)?.let {
+                currentId = it.groupValues[1].toIntOrNull()
+            }
+            val id = currentId ?: return@forEach
+            Regex("""windowingMode[= ]([A-Za-z]+)\((\d+)\)""").find(line)?.let {
+                result[id] = it.groupValues[2].toIntOrNull() ?: return@let
+            }
+        }
+        return result
+    }
+
+    override fun probePointerDisplay(): String = clean(buildString {
+        appendLine("=========== MouseFlow 探测 ===========")
+        appendLine()
+
+        // 1) 物理鼠标枚举
+        appendLine("--- 物理鼠标设备 ---")
+        val mice = runCatching { pointerController.listMice() }.getOrElse { t ->
+            appendLine("  枚举失败: ${Reflect.describe(t)}")
+            emptyList()
+        }
+        if (mice.isEmpty()) {
+            appendLine("  （没有检测到任何鼠标类设备）")
+        } else {
+            mice.forEach { m ->
+                appendLine("  Device ID: ${m.id}")
+                appendLine("    Name:     ${m.name}")
+                appendLine("    Sources:  0x${m.sources.toString(16)}")
+                appendLine("    Vendor:   ${m.vendorId}  Product: ${m.productId}")
+                appendLine("    External: ${m.isExternal}")
+                appendLine("    AssocDisplayId: ${m.associatedDisplayId ?: "(无)"}")
+                appendLine("    RelativeAxes: ${m.hasRelativeAxes}  ← Moonlight 相对鼠标模式相关")
+            }
+        }
+        appendLine()
+
+        // 2) 显示器状态
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        val displays = runCatching { dm?.displays }.getOrNull().orEmpty()
+        appendLine("--- 当前显示器 ---")
+        val states = mutableMapOf<Int, Boolean>()
+        displays.forEach { d ->
+            val type = Reflect.call(d, "getType").getOrNull() as? Int ?: -1
+            val state = runCatching { Reflect.call(d, "getState").getOrNull() as? Int }.getOrNull() ?: -1
+            // Display.STATE_OFF = 1
+            states[d.displayId] = state != 1
+            appendLine("  Display ${d.displayId}: name=${d.name} type=$type state=$state")
+        }
+        appendLine()
+
+        // 3) windowingMode
+        val modes = runCatching { windowingModesFromDumpsys() }.getOrDefault(emptyMap())
+        appendLine("--- windowingMode（AOSP 判据：FREEFORM=5）---")
+        modes.forEach { (id, mode) -> appendLine("  Display $id -> windowingMode=$mode") }
+        appendLine()
+
+        // 4) 分析
+        appendLine(runCatching { pointerController.analyze(states, modes) }
+            .getOrElse { "分析失败: ${Reflect.describe(it)}" })
+
+        appendLine()
+        appendLine("--- 当前指针位置读取 ---")
+        val pos = pointerController.currentPosition(0)
+        appendLine("  dumpsys 解析结果: ${pos ?: "(读不到，不编造)"}")
+
+        appendLine()
+        appendLine("--- ADB 辅助诊断命令（可复制到 PC 上跑）---")
+        appendLine("  adb shell dumpsys input | grep -i -E \"pointer|display|viewport|mouse\"")
+        appendLine("  adb shell dumpsys display")
+    })
+
+    override fun forcePointerToDisplay(displayId: Int): String = clean(buildString {
+        appendLine("=== 强制指针到 Display $displayId ===")
+        appendLine()
+
+        // 先确定目标屏的坐标空间（必须从系统侧量）
+        val probe = CoordinateSpaceProbe(::execRaw)
+        val space = runCatching { probe.injectionSpace(displayId) }.getOrNull()
+        if (space == null) {
+            appendLine("RESULT_OK=false")
+            appendLine("取不到 Display $displayId 的坐标空间（dumpsys window displays 无 cur=）")
+            appendLine("→ 无法安全计算落点，拒绝盲猜坐标")
+            return@buildString
+        }
+        appendLine("目标屏坐标空间: ${space.label}（来源 ${space.raw}）")
+
+        // 落点：屏幕中心
+        val x = space.width / 2
+        val y = space.height / 2
+        appendLine("落点: ($x, $y)")
+        appendLine()
+
+        val r = runCatching { pointerController.moveTo(displayId, x, y) }.getOrElse { t ->
+            PointerDisplayController.Report(false, "异常: ${Reflect.describe(t)}")
+        }
+        appendLine("RESULT_OK=${r.ok}")
+        appendLine(r.toText())
+
+        if (!r.ok) {
+            appendLine()
+            appendLine("--- 失败排查 ---")
+            appendLine("本方法走的是 injectInputEvent + setDisplayId（可调用）。")
+            appendLine("若它失败，说明注入这条路被挡（缺 INJECT_EVENTS 或 ROM 限制）。")
+            appendLine()
+            appendLine("但请注意：**原生光标能否显示在外屏，取决于另外两个 Global 设置**")
+            appendLine("（桌面模式 + 自由窗口），不是靠这个方法。")
+            appendLine("先看「探测」输出里的分析结论。")
+        }
+    })
+
+    // ------------------------------------------------------------------
     // 指针注入（触控板方案）
     // ------------------------------------------------------------------
 
