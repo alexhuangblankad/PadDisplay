@@ -343,6 +343,139 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         }
     })
 
+    /**
+     * 镜像状态探针。
+     *
+     * 这是定位「4K 显示器有黑边、分辨率设不上」的关键：
+     * `windowingMode == FULLSCREEN` **不等于**没在镜像。
+     * AOSP 的 `DisplayContent.shouldBeMirrored()` 主要看两件事：
+     *
+     * ```
+     * shouldBeMirrored() = !mDisplayWindowSettings.shouldBeEnabled(...)
+     *                      || (shouldForceDesktopMode()
+     *                          && windowingMode == WINDOWING_MODE_FULLSCREEN)
+     * ```
+     *
+     * 其中 `DisplayManagerService.shouldForceDesktopMode()`：
+     *
+     * ```
+     * mDisplayId != DEFAULT_DISPLAY
+     *   && resources.getBoolean(config_isDesktopModeSupported)      // 设备能力
+     *   && Settings.Global.getInt(development_force_desktop_mode_on_external_displays) == 1
+     * ```
+     *
+     * 所以只要这两项同时为真，外接屏在 FULLSCREEN 下就会被强制镜像 ——
+     * 跟着内屏的分辨率走，于是"分辨率设不上 + 黑边"。
+     */
+    override fun probeMirrorState(externalDisplayId: Int): String = clean(buildString {
+        appendLine("=== 镜像状态探针（displayId=$externalDisplayId）===")
+        val ctx = injectedContext
+
+        // ---- 1) 全局设置：是否强制桌面模式 ----
+        val forceDesktopKey = "development_force_desktop_mode_on_external_displays"
+        val globalValue = runCatching {
+            android.provider.Settings.Global.getInt(ctx?.contentResolver, forceDesktopKey, -1)
+        }.getOrDefault(-999)
+        appendLine("Settings.Global.$forceDesktopKey = $globalValue")
+        appendLine("  （1 = 强制在外接屏开启桌面模式，同时也是 AOSP 的镜像触发条件之一）")
+        appendLine()
+
+        // ---- 2) 设备能力：config_isDesktopModeSupported ----
+        val supported = runCatching {
+            val res = ctx?.resources ?: return@runCatching null
+            val id = res.getIdentifier("config_isDesktopModeSupported", "bool", "android")
+            if (id != 0) res.getBoolean(id) else null
+        }.getOrNull()
+        appendLine("config_isDesktopModeSupported = ${supported ?: "(读不到)"}")
+        appendLine()
+
+        // ---- 3) DisplayInfo 实际尺寸（黑边的直接证据）----
+        appendLine("--- DisplayInfo 实际尺寸 ---")
+        val dm = ctx?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        val display = dm?.getDisplay(externalDisplayId)
+        if (display == null) {
+            appendLine("拿不到该 Display")
+        } else {
+            appendLine("Display.getName() = ${display.name}")
+            val m = display.mode
+            appendLine("Display.getMode() = " + (m?.let { "${it.physicalWidth}x${it.physicalHeight}@${it.refreshRate} id=${it.modeId}" } ?: "?"))
+            appendLine("Display.getState() = ${display.state}")
+            appendLine("Display.getFlags() = 0x${Integer.toHexString(display.flags)}")
+            appendLine()
+            // DisplayInfo 是隐藏类，用反射读它的公共字段
+            val info = readDisplayInfo(display.displayId)
+            if (info == null) {
+                appendLine("DisplayInfo 反射读取失败")
+            } else {
+                for (f in listOf(
+                    "logicalWidth", "logicalHeight", "appWidth", "appHeight",
+                    "logicalDensityDpi", "smallestNominalAppWidth", "smallestNominalAppHeight",
+                    "largestNominalAppWidth", "largestNominalAppHeight",
+                    "type", "displayId", "rotation", "address",
+                )) {
+                    val v = Reflect.getField(info, f).getOrNull()
+                    if (v != null) appendLine("  DisplayInfo.$f = $v")
+                }
+                appendLine()
+                appendLine("判读提示：若 logicalWidth/Height 明显小于显示器物理分辨率，")
+                appendLine("或 appWidth/Height 与内屏一致，说明外接屏正在**镜像**内屏，")
+                appendLine("画面被系统放大到 4K 面板 -> 出现黑边、且分辨率设不上。")
+            }
+        }
+        appendLine()
+        appendLine("--- dumpsys 相关片段 ---")
+        appendLine(execRaw("/system/bin/dumpsys display | grep -i -A2 'mDisplayId=$externalDisplayId' | head -n 40"))
+    })
+
+    /** 反射读 DisplayManagerGlobal.getDisplayInfo(displayId)（隐藏 API）。 */
+    private fun readDisplayInfo(displayId: Int): Any? = runCatching {
+        val clazz = Reflect.classForName("android.hardware.display.DisplayManagerGlobal")
+        val getInstance = Reflect.findMethod(clazz, "getInstance") ?: return null
+        val global = getInstance.invoke(null) ?: return null
+        val m = Reflect.findMethod(global.javaClass, "getDisplayInfo", Int::class.javaPrimitiveType) ?: return null
+        m.invoke(global, displayId)
+    }.getOrNull()
+
+    /**
+     * 开关「在外接屏强制桌面模式」。
+     *
+     * 这条全局设置是 AOSP 让外接屏被强制镜像的条件之一，也是
+     * 「4K 显示器有黑边、分辨率设不上」最可能的总开关。
+     */
+    override fun setForceDesktopMode(enable: Boolean): String {
+        val key = "development_force_desktop_mode_on_external_displays"
+        val resolver = injectedContext?.contentResolver
+        if (resolver == null) {
+            return clean("RESULT_OK=false\n拿不到 ContentResolver，无法写入该设置")
+        }
+        return clean(buildString {
+            val old = runCatching {
+                android.provider.Settings.Global.getInt(resolver, key, -1)
+            }.getOrDefault(-999)
+            appendLine("设置项: Settings.Global.$key")
+            appendLine("原值: $old   目标值: ${if (enable) 1 else 0}")
+            val wrote = runCatching {
+                android.provider.Settings.Global.putInt(resolver, key, if (enable) 1 else 0)
+            }.getOrDefault(false)
+            val now = runCatching {
+                android.provider.Settings.Global.getInt(resolver, key, -1)
+            }.getOrDefault(-999)
+            val want = if (enable) 1 else 0
+            val ok = wrote && now == want
+            appendLine("RESULT_OK=$ok")
+            appendLine("写入返回: $wrote   读回值: $now")
+            if (!ok) {
+                appendLine()
+                appendLine("写入失败或被系统拒绝。该设置需要 WRITE_SECURE_SETTINGS，")
+                appendLine("Shizuku 的 shell 身份应当持有；若被 ColorOS 拦截会在这里体现。")
+            } else {
+                appendLine()
+                appendLine("已改。请重新插拔外接屏（或重启）让显示策略重新计算，")
+                appendLine("然后再次查看镜像探针与分辨率列表。")
+            }
+        })
+    }
+
     override fun setUserPreferredDisplayMode(
         displayId: Int,
         modeId: Int,

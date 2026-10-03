@@ -50,6 +50,37 @@ interface IPadDisplayService {
      */
     String probeShellEnvironment();
 
+    /**
+     * 镜像状态探针 —— 判断外接屏是否**仍在被镜像**。
+     *
+     * 为什么必须单独探：
+     * `windowingMode == FULLSCREEN` **不能**说明没在镜像。
+     * 是否镜像由 `DisplayContent.shouldBeMirrored()` 决定，主要看
+     * ①`DisplayManagerService.shouldForceDesktopMode()`（读全局设置
+     *   `development_force_desktop_mode_on_external_displays` 与设备的
+     *   `config_isDesktopModeSupported`）
+     * ②`DisplayWindowSettings.isDisplayEnabled()`。
+     *
+     * 镜像时外接屏会跟着内屏的模式走，所以分辨率设不上、还会出现黑边。
+     */
+    String probeMirrorState(int externalDisplayId);
+
+    /**
+     * 关闭「在外接屏强制桌面模式」这一全局设置。
+     *
+     * 这是 AOSP 让外接屏被强制镜像的条件之一：
+     * `DisplayManagerService.shouldForceDesktopMode()` 同时要求
+     * ①设备支持桌面模式（`config_isDesktopModeSupported`）
+     * ②`Settings.Global.development_force_desktop_mode_on_external_displays == 1`
+     *
+     * 关闭它之后，外接屏在 FULLSCREEN 下不再被强制镜像，
+     * 才有可能独立设置 4K 分辨率、消除黑边。
+     *
+     * 需要 `WRITE_SECURE_SETTINGS`（Shizuku 的 shell 持有）。
+     * @param enable true = 打开（恢复系统原状），false = 关闭
+     */
+    String setForceDesktopMode(boolean enable);
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 

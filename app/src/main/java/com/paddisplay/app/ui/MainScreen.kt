@@ -132,6 +132,7 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
 
             if (external != null) {
                 item { DisplayModeCard(vm = vm, ui = ui, external = external) }
+                item { MirrorFixCard(vm = vm, ui = ui, external = external) }
                 item { AudioOutputCard(vm = vm, ui = ui) }
                 item { ResolutionPicker(vm = vm, ui = ui, external = external) }
                 item {
@@ -569,6 +570,85 @@ private fun AudioOutputCard(vm: MainViewModel, ui: MainViewModel.UiState) {
                 enabled = !ui.busy,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("刷新音频状态") }
+        }
+    }
+}
+
+/**
+ * 黑边 / 镜像 诊断与修复。
+ *
+ * 这是用户实际遇到的核心问题：4K 显示器有黑边、分辨率设不上、
+ * 只能用镜像复制模式。根因通常是外接屏**仍在被镜像** ——
+ * 镜像时它跟着内屏的模式走，于是 4K 设不上、画面被放大后出现黑边。
+ */
+@Composable
+private fun MirrorFixCard(
+    vm: MainViewModel,
+    ui: MainViewModel.UiState,
+    external: com.paddisplay.app.display.DisplaySnapshot,
+) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f),
+        ),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                "黑边 / 分辨率设不上？",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "如果你的 4K 显示器出现黑边、并且只能用镜像复制模式，" +
+                    "最常见的原因是**外接屏仍在被系统镜像**：" +
+                    "镜像时它会跟着平板内屏的分辨率走，4K 自然设不上，" +
+                    "画面被放大到 4K 面板后周围就是黑边。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "注意：界面显示的「扩展」只代表 windowingMode=FULLSCREEN，" +
+                    "**它不能说明有没有在镜像**，所以要单独探测。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = { vm.runMirrorProbe() },
+                enabled = ui.shizuku.canControl && !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("① 探测镜像状态（先做这个）") }
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.disableForcedDesktopMode() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("② 关闭强制桌面模式") }
+                OutlinedButton(
+                    onClick = { vm.enableForcedDesktopMode() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("恢复默认") }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "②写的是 Android 的全局设置 " +
+                    "development_force_desktop_mode_on_external_displays = 0。" +
+                    "它是 AOSP 让外接屏被强制镜像的条件之一。改完请**重新插拔外接屏**" +
+                    "让显示策略重算，然后再点①看镜像是否解除、分辨率列表是否出现更多选项。" +
+                    "「恢复默认」把它写回 1。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            OutlinedButton(
+                onClick = { vm.runModeSelfCheck() },
+                enabled = ui.shizuku.canControl && !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("③ Mode 自检（看硬件上报了哪些模式）") }
         }
     }
 }

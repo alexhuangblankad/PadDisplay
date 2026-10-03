@@ -474,6 +474,40 @@ class SystemDisplayService(
         } ?: "UserService 未连接"
     }
 
+    /** 镜像状态探针：判断外接屏是否仍在被镜像（黑边/分辨率设不上的根因）。 */
+    suspend fun probeMirrorState(externalDisplayId: Int): String = withContext(Dispatchers.IO) {
+        val fromService = service()?.let {
+            runCatching { it.probeMirrorState(externalDisplayId) }
+                .getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+        // 附上 App 侧的内外屏尺寸对照（最直观的镜像证据）
+        fromService + "\n" + repo.buildMirrorEvidence()
+    }
+
+    /**
+     * 关闭/打开「在外接屏强制桌面模式」。
+     *
+     * 这是 AOSP 里 `shouldForceDesktopMode()` 的开关，也是外接屏被强制镜像的条件之一。
+     * 关掉它，外接屏才有可能脱离镜像、独立设置 4K。
+     */
+    suspend fun setForceDesktopMode(enable: Boolean): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+        runCatching {
+            val out = svc.setForceDesktopMode(enable)
+            val ok = out.contains("RESULT_OK=true")
+            OpResult(
+                ok,
+                if (ok) {
+                    if (enable) "已恢复「外接屏强制桌面模式」" else "已关闭「外接屏强制桌面模式」"
+                } else {
+                    "设置未生效（可能被系统拒绝）"
+                },
+                out.lines().filter { it.isNotBlank() },
+            )
+        }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+
     /**
      * 读外接屏真实的 windowingMode（"扩展/复制"的权威判据）。
      *

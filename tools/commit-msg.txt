@@ -1,53 +1,60 @@
-v0.1.6: 分辨率/显示模式诊断增强，不再靠"没报错"当成功
+v0.1.7: 黑边/镜像专项 —— 探测真实镜像状态并给出修复开关
 
-## 从用户日志读出的硬事实
+## 为什么这一版是必要的
 
-- 外接屏(displayId=13) windowingMode: FULLSCREEN(1)
-  → 已经是扩展模式，不是镜像。"镜像导致改不了分辨率"的假设是错的。
-- getWindowingMode code: 98 / setWindowingMode code: 99
-  → 修正后的 code 在设备上真的执行了。
-- 外屏是 4K 屏（型号 OPD2515），当前就跑在 3840x2160@60。
-- 日志里那次"切换"的目标是 3840x2160@60，与外屏当前模式完全一样
-  → 那次调用本来就是空操作，不是失败。
+用户实测反馈：无论软件层面怎么报成功，现实层面就是 4K 显示器还有黑边、
+无法用 4K 分辨率、只能用镜像复制模式。
 
-这暴露了一个工具性缺陷：无法验证"换一个分辨率到底行不行"。
+这句话点破了一个我此前判断错的地方：
 
-## 本版修复
+windowingMode == FULLSCREEN(1) 不能说明"没在镜像"。
+上一版就是被这个值误导，得出了"已经是扩展模式、问题不在这里"的结论。
+实际上 AOSP 里是否镜像由 DisplayContent.shouldBeMirrored() 单独决定：
 
-1. Mode 切换现在会「读回验证」。
-   RESULT_OK=true 只代表调用没抛异常，不代表分辨率真的变了。
-   现在每次切换后都 getUserPreferredDisplayMode() 读回比对：
-   调用成功+读回一致=成功；调用成功+读回不一致=请求未被系统采用（明确报告）；
-   调用失败=附完整异常。
+  shouldBeMirrored() = !mDisplayWindowSettings.shouldBeEnabled(...)
+                       || (shouldForceDesktopMode()
+                           && windowingMode == WINDOWING_MODE_FULLSCREEN)
 
-2. 目标与当前相同 -> 明确告知"已经是 X，无需切换"，
-   并提示要验证能否切换请选另一个分辨率。
+其中 DisplayManagerService.shouldForceDesktopMode() 要求：
+  非默认屏 + 设备支持桌面模式(config_isDesktopModeSupported)
+  + Settings.Global.development_force_desktop_mode_on_external_displays == 1
 
-3. 新增「Mode 自检」按钮，一键输出：
-   App 侧当前 Mode / supportedModes 数量 / 可选分辨率、
-   UserService 侧读回的真实 Mode / 用户首选 Mode / 系统首选 Mode、shell 环境。
+黑边正是镜像的典型症状：镜像时外接屏沿用内屏分辨率（约 2560x1600），
+画面被放大到 4K 面板后周围留黑；同时因为它跟着内屏走，4K 也就设不上。
+所以"黑边"和"分辨率设不上"是同一个根因。
 
-4. 修掉 shell 命令可能静默失败的问题。
-   wm / dumpsys 在 /system/bin 下，但 Shizuku UserService 进程的 PATH 不一定包含它。
-   早先用 sh -c "wm size -d N" 可能失败且无输出，导致读到空字符串、
-   快照变 0x0、回滚机制失效。现在显式补全 PATH 并返回退出码。
+## 本版新增
 
-5. 修掉一个状态竞态：applyBestResolution() 原来先改 UI 状态再立刻读状态，
-   可能读到旧值，导致"最佳分辨率"实际没被应用。现在改为显式传参。
+1. 镜像状态探针 probeMirrorState，一次输出全部判定依据：
+   - Settings.Global.development_force_desktop_mode_on_external_displays 当前值
+   - 设备能力 config_isDesktopModeSupported
+   - 外接屏 DisplayInfo 实际字段：logicalWidth/Height、appWidth/Height、
+     logicalDensityDpi、rotation、address
+   - dumpsys display 相关片段
 
-6. 分辨率列表标出「← 当前」，并在只有一种分辨率时明确说明没得选。
+2. 内外屏尺寸对照（最直观的镜像证据）
+   反射 DisplayManagerGlobal.getDisplayInfo() 把内屏与外屏关键字段并列打印，
+   并给出判读：内外屏 logicalWidth/Height 完全相同 -> 高度疑似镜像；
+   不同 -> 外接屏是独立尺寸。
 
-## 关于复制/扩展的诚实说明
+3. 「关闭强制桌面模式」开关（真正的修复手段）
+   把 development_force_desktop_mode_on_external_displays 写成 0 并读回验证。
+   这是 AOSP 让外接屏被强制镜像的条件之一，关掉后外接屏在 FULLSCREEN 下
+   不再被强制镜像，才有可能独立设 4K、消除黑边。
+   同时提供「恢复默认」写回 1。
+   该设置需要 WRITE_SECURE_SETTINGS，Shizuku 的 shell 身份持有。
 
-- 「扩展」可实现：per-display 设独立 FULLSCREEN，并读回 getWindowingMode 验证。
-- 「复制」本应用不强制切换：Android 14 起已移除强制镜像 API
-  （setDisplayIdToMirror 在 API 34/35/36 的 AIDL 里都不存在）。
-  硬做需要改 display 的 enable 状态，有让内屏一并熄灭的风险。
+## 操作顺序
 
-## 验证步骤
+1. 点①探测镜像状态 -> 把报告发回（重点看内外屏 logicalWidth/Height 是否相同）
+2. 点②关闭强制桌面模式 -> 看返回的 RESULT_OK 与读回值
+3. 重新插拔外接屏（或重启）让显示策略重算
+4. 再点①看镜像是否解除、分辨率列表是否出现更多选项
 
-1. 点「Mode 自检」，把报告发回
-2. 看分辨率列表里除了 4K@60 还有没有别的
-3. 选一个不同的分辨率（如 1920x1080）→ 点应用
-4. 看事件日志里「读回验证(首选 Mode)」那一行：
-   系统已接受 = 通道有效；请求未被系统采用 = 通道被 ColorOS 挡了，改用逻辑尺寸通道
+如果②写入被 ColorOS 拒绝，报告里会体现，再换别的突破口
+（例如直接改 DisplayWindowSettings 的 enable 状态）。
+
+## 说明
+
+这一版依然没有真机验证。但与前几版不同：这次不是靠猜，
+而是把判定镜像所需的全部依据都摆到报告里，数据出来根因就明确了。

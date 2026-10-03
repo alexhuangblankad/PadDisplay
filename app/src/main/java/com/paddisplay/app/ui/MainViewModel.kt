@@ -245,6 +245,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 镜像 / 黑边诊断：判断外接屏是否仍在被镜像。
+     *
+     * 这是「4K 显示器有黑边、分辨率设不上」的根因排查：
+     * `windowingMode == FULLSCREEN` **不代表**没在镜像。
+     */
+    fun runMirrorProbe() {
+        viewModelScope.launch {
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器，无法探测")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            val sb = StringBuilder()
+            sb.appendLine("=========== 黑边 / 镜像 诊断 ===========")
+            sb.appendLine("外接屏 displayId = ${external.displayId}（${external.name}）")
+            sb.appendLine("App 侧当前 Mode = ${external.currentModeLabel}")
+            sb.appendLine("App 侧 supportedModes 数量 = ${external.supportedModes.size}")
+            sb.appendLine()
+            sb.appendLine(systemService.probeMirrorState(external.displayId))
+            _ui.value = _ui.value.copy(busy = false, diagnostics = sb.toString(), showDiagnostics = true)
+            appendLog("已生成镜像/黑边诊断报告")
+        }
+    }
+
+    /** 关闭「外接屏强制桌面模式」—— 打破镜像、让外接屏能独立设 4K。 */
+    fun disableForcedDesktopMode() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.setForceDesktopMode(enable = false)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("关闭强制桌面模式：${r.toText().replace("\n", " / ")}")
+            delay(500)
+            runMirrorProbe()
+        }
+    }
+
+    /** 恢复「外接屏强制桌面模式」到系统默认（1）。 */
+    fun enableForcedDesktopMode() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.setForceDesktopMode(enable = true)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("恢复强制桌面模式：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
     fun refreshDisplays() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val overrides = settings.roleOverrides.first()

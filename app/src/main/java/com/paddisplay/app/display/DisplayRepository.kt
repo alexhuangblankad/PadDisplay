@@ -250,6 +250,72 @@ class DisplayRepository(private val context: Context) {
     }
 
     /**
+     * 用隐藏 API `DisplayManagerGlobal.getDisplayInfo(displayId)` 读 DisplayInfo 的关键字段。
+     *
+     * 为什么需要它：判断"外接屏是否被镜像"最直接的证据就是
+     * **内外屏的 app 尺寸 / logical 尺寸是否完全一致**。
+     * 镜像时外接屏会直接沿用内屏的尺寸，于是 4K 设不上、画面被放大后出现黑边。
+     *
+     * @return 字段名 -> 值 的列表；读不到返回 null
+     */
+    fun readDisplayInfoFields(displayId: Int): List<Pair<String, String>>? {
+        val info = runCatching {
+            val clazz = Reflect.classForName("android.hardware.display.DisplayManagerGlobal")
+            val getInstance = Reflect.findMethod(clazz, "getInstance") ?: return null
+            val global = getInstance.invoke(null) ?: return null
+            val m = Reflect.findMethod(global.javaClass, "getDisplayInfo", Int::class.javaPrimitiveType)
+                ?: return null
+            m.invoke(global, displayId)
+        }.getOrNull() ?: return null
+
+        val fields = listOf(
+            "displayId", "type", "logicalWidth", "logicalHeight",
+            "appWidth", "appHeight", "logicalDensityDpi",
+            "rotation", "address", "name",
+        )
+        val out = mutableListOf<Pair<String, String>>()
+        fields.forEach { f ->
+            Reflect.getField(info, f).getOrNull()?.let { out += f to it.toString() }
+        }
+        return out.ifEmpty { null }
+    }
+
+    /**
+     * 内外屏尺寸对照，用于判断"是否在镜像"。
+     * @return 可读报告
+     */
+    fun buildMirrorEvidence(): String = buildString {
+        appendLine("--- 内外屏 DisplayInfo 对照（镜像判定证据）---")
+        val internal = internalDisplay()
+        val external = primaryExternalDisplay()
+        listOfNotNull(internal, external).forEach { d ->
+            appendLine("Display ${d.displayId}（${if (d.isInternal) "内屏" else "外屏"}）${d.name}")
+            val fields = readDisplayInfoFields(d.displayId)
+            if (fields == null) {
+                appendLine("  (DisplayInfo 读不到)")
+            } else {
+                fields.forEach { (k, v) -> appendLine("  $k = $v") }
+            }
+            appendLine()
+        }
+        if (internal != null && external != null) {
+            val iw = internal.logicalWidth
+            val ih = internal.logicalHeight
+            val ew = external.logicalWidth
+            val eh = external.logicalHeight
+            appendLine("判读：内屏 ${iw}x${ih}，外屏 ${ew}x$eh")
+            appendLine(
+                if (iw > 0 && iw == ew && ih == eh) {
+                    "⚠️ 内外屏逻辑尺寸完全相同 —— 高度疑似**镜像**状态。"
+                } else {
+                    "内外屏逻辑尺寸不同 —— 说明外接屏是独立尺寸（不是镜像）。"
+                },
+            )
+            appendLine("参考：外接屏物理分辨率应为 ${external.currentMode?.physicalWidth}×${external.currentMode?.physicalHeight}")
+        }
+    }
+
+    /**
      * 物理屏相关调用统一委托给 [PhysicalDisplayAccess]：
      * Android 14+ 上这些方法已从 SurfaceControl 搬到
      * `com.android.server.display.DisplayControl`，那里做了兜底。
