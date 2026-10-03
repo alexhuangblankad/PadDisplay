@@ -66,6 +66,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         // ---------------- 显示模式 ----------------
         val displayMode: DisplayMode = DisplayMode.UNKNOWN,
         val displayModeDetail: String = "",
+        /** 高级选项面板是否展开（默认收起，避免一屏塞满按钮让人不知道该点哪个） */
+        val advancedExpanded: Boolean = false,
     )
 
     /** 外接屏显示模式（对标 Windows Win+P）。 */
@@ -443,7 +445,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      *
      * @param externalOnRight true = 外接屏在右侧
      */
-    fun setScreenLayout(externalOnRight: Boolean) {
+    fun setScreenLayout(position: Int) {
         viewModelScope.launch {
             val internal = systemService.internalDisplay()
             val external = systemService.primaryExternal()
@@ -456,12 +458,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val r = systemService.setDisplayTopologyLayout(
                 primaryDisplayId = internal.displayId,
                 otherDisplayId = external.displayId,
-                otherOnRight = externalOnRight,
+                position = position,
                 primarySize = internal.logicalWidth to internal.logicalHeight,
                 otherSize = external.logicalWidth to external.logicalHeight,
             )
             _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
-            appendLog("设置屏幕布局（外屏在${if (externalOnRight) "右" else "左"}）：${r.toText().replace("\n", " / ")}")
+            appendLog("设置屏幕布局（${positionLabel(position)}）：${r.toText().replace("\n", " / ")}")
         }
     }
 
@@ -534,7 +536,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val topo = systemService.setDisplayTopologyLayout(
                     primaryDisplayId = internal.displayId,
                     otherDisplayId = external.displayId,
-                    otherOnRight = true,
+                    position = 2, // 外屏在右
                     primarySize = internal.logicalWidth to internal.logicalHeight,
                     otherSize = external.logicalWidth to external.logicalHeight,
                 )
@@ -546,6 +548,51 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             delay(500)
             refreshDisplays()
         }
+    }
+
+    /**
+     * 一键完成「我想要的」：外接屏独立显示 + 内屏保持 + 音频留平板 + 外屏开应用。
+     */
+    fun oneClickExtend() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.oneClickExtend()
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("一键完成：${r.toText().replace("\n", " / ")}")
+            delay(600)
+            refreshDisplays()
+        }
+    }
+
+    /**
+     * 一键还原所有设置。
+     *
+     * 这是"救命按钮"：把本应用可能改动过的系统级状态全部恢复。
+     * 先点亮内屏，保证用户看得见结果。
+     */
+    fun restoreAll() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.restoreAll()
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("一键还原：${r.toText().replace("\n", " / ")}")
+            hotplug.markInternalTurnedOff(false)
+            delay(600)
+            refreshDisplays()
+        }
+    }
+
+    /** 方向标签。 */
+    private fun positionLabel(position: Int): String = when (position) {
+        0 -> "外屏在左"
+        1 -> "外屏在上"
+        2 -> "外屏在右"
+        3 -> "外屏在下"
+        else -> "位置($position)"
+    }
+    /** 高级选项面板是否展开。 */
+    fun toggleAdvanced() {
+        _ui.value = _ui.value.copy(advancedExpanded = !_ui.value.advancedExpanded)
     }
 
     fun refreshDisplays() {

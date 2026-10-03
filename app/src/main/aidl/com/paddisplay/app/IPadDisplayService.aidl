@@ -130,15 +130,15 @@ interface IPadDisplayService {
     String probeDisplayTopology();
 
     /**
-     * 设置两块屏的左右关系。
+     * 设置两块屏的相对位置。
      * @param primaryDisplayId 作为坐标原点(0,0)的显示器
      * @param otherDisplayId 另一块
-     * @param otherOnRight true = 另一块在右侧
+     * @param position 0=左 1=上 2=右 3=下（与 AOSP TreeNode.POSITION_* 一致）
      */
     String setDisplayTopologyLayout(
         int primaryDisplayId,
         int otherDisplayId,
-        boolean otherOnRight,
+        int position,
         int primaryWidth,
         int primaryHeight,
         int otherWidth,
@@ -168,6 +168,18 @@ interface IPadDisplayService {
 
     /** 在指定屏的坐标空间里注入一次点击（自动夹取到有效范围）。 */
     String injectTapOnDisplay(int displayId, int x, int y);
+
+    /**
+     * 一键还原本应用可能改动过的**所有**系统状态。
+     *
+     * 覆盖：
+     * - 解除所有输入设备关联（只读，不做危险改动）
+     * - 清除音频输出固定（媒体策略首选设备 + 通话音）
+     * - 还原显示拓扑到之前快照
+     * - 清除逻辑尺寸覆盖与用户首选 Mode
+     * - 内屏窗口模式还原为 FULLSCREEN，并打开内屏电源
+     */
+    String restoreAll();
 
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);

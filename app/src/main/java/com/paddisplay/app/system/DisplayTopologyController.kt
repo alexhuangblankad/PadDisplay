@@ -88,6 +88,80 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
     /** 本机是否支持读取/写入显示拓扑（以能否解析到真实事务号为准）。 */
     fun isSupported(): Boolean = resolvedCodes != null && displayManagerBinder != null
 
+    /**
+     * 保存当前拓扑快照，供「一键还原」用。
+     *
+     * `setDisplayTopology` 是**整体替换**系统拓扑，不先存原始值就还不了原。
+     * 返回值：`null` = 本机不支持；`true to null` = 原本无拓扑；
+     * `true to bytes` = 原始拓扑的 Parcel 字节。
+     */
+    fun snapshotTopologyBytes(): Pair<Boolean, ByteArray?>? {
+        val codes = resolvedCodes ?: return null
+        return AidlCodec.call(
+            binder = displayManagerBinder,
+            descriptor = AidlCodec.DESCRIPTOR_DISPLAY_MANAGER,
+            label = "snapshotTopology",
+            code = codes.first,
+            writeArgs = { },
+            readReply = { reply ->
+                val present = reply.readInt()
+                if (present == 0) {
+                    true to null
+                } else {
+                    // 逐字段读一遍再序列化回去，避免直接抓 parcel 字节（长度不定）
+                    val topo = readParcelableFromReply(reply, CLASS_TOPOLOGY)
+                    true to serializeTopology(topo)
+                }
+            },
+        ).getOrNull()
+    }
+
+    /**
+     * 把拓扑对象序列化成字节。
+     *
+     * `DisplayTopology` 的 Parcel 布局是：`[1][root: 字段…][primaryDisplayId]`，
+     * 与 AOSP 的 `writeToParcel` 一致（参考项目 Dextop 也是按这个布局手写的）。
+     */
+    private fun serializeTopology(topology: Any?): ByteArray? {
+        if (topology == null) return null
+        return runCatching {
+            val p = Parcel.obtain()
+            try {
+                @Suppress("UNCHECKED_CAST")
+                (topology as Parcelable).writeToParcel(p, 0)
+                p.marshall()
+            } finally {
+                p.recycle()
+            }
+        }.getOrNull()
+    }
+
+    /** 用字节快照还原拓扑。 */
+    fun restoreTopologyBytes(bytes: ByteArray?): Report {
+        val codes = resolvedCodes
+            ?: return Report(false, "setDisplayTopology", "无法解析真实事务号，已放弃")
+        val r = AidlCodec.callVoid(
+            binder = displayManagerBinder,
+            descriptor = AidlCodec.DESCRIPTOR_DISPLAY_MANAGER,
+            label = "setDisplayTopology(restore)",
+            code = codes.second,
+            writeArgs = { data ->
+                if (bytes == null) {
+                    data.writeInt(0)
+                } else {
+                    data.writeInt(1)
+                    data.writeByteArray(bytes)
+                }
+            },
+        )
+        return r.fold(
+            onSuccess = {
+                Report(true, "setDisplayTopology", if (bytes == null) "已还原为「无拓扑」" else "已写回拓扑快照")
+            },
+            onFailure = { Report(false, "setDisplayTopology", Reflect.describe(it)) },
+        )
+    }
+
     data class Report(val ok: Boolean, val channel: String, val detail: String) {
         fun toText(): String = if (ok) "✅ $channel: $detail" else "❌ $channel: $detail"
     }
@@ -233,18 +307,14 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
     // ------------------------------------------------------------------
 
     /**
-     * 设置两块屏的左右关系。
+     * 设置两块屏的相对位置（支持左/上/右/下四个方向）。
      *
-     * @param primaryDisplayId 作为坐标原点（左上角 0,0）的显示器
-     * @param otherDisplayId   另一块显示器
-     * @param otherOnRight     true = 另一块在**右**侧；false = 在**左**侧
-     * @param primarySize      原点的逻辑尺寸 (宽, 高)
-     * @param otherSize        另一块的逻辑尺寸 (宽, 高)
+     * @param position 0=左 1=上 2=右 3=下（与 AOSP `TreeNode.POSITION_*` 一致）
      */
-    fun setHorizontalLayout(
+    fun setLayout(
         primaryDisplayId: Int,
         otherDisplayId: Int,
-        otherOnRight: Boolean,
+        position: Int,
         primarySize: Pair<Int, Int>,
         otherSize: Pair<Int, Int>,
     ): List<Report> {
@@ -279,7 +349,7 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
         }
 
         // 3) 构造 TreeNode 树：根 = primary，子 = other，位置 LEFT 或 RIGHT
-        val position = if (otherOnRight) POSITION_RIGHT else POSITION_LEFT
+        // position 直接来自调用方（0=左 1=上 2=右 3=下）
         val childNode = runCatching {
             treeNodeClass.getDeclaredConstructor(
                 Int::class.javaPrimitiveType,
@@ -304,7 +374,7 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
                     primaryDisplayId,
                     primarySize.first.toFloat(),
                     primarySize.second.toFloat(),
-                    POSITION_RIGHT, // 根节点的 position 无意义
+                    POSITION_RIGHT, // 根节点没有父节点，position 无意义
                     0f,
                     listOf(childNode),
                 )
@@ -339,8 +409,7 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
                 Report(
                     true,
                     "setDisplayTopology",
-                    "已提交：$primaryDisplayId 为原点，$otherDisplayId 在" +
-                        (if (otherOnRight) "右" else "左") + "侧",
+                    "已提交：$primaryDisplayId 为原点，$otherDisplayId 在${positionName(position)}",
                 )
             },
             onFailure = { Report(false, "setDisplayTopology", Reflect.describe(it)) },

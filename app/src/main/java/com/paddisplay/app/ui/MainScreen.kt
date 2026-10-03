@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.Button
@@ -30,6 +31,9 @@ import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -83,97 +87,107 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
                 item { PermissionCard(vm, ui) }
             }
 
-            // ---------------- 内置显示器 ----------------
-            item {
-                if (internal != null) {
-                    DisplayCard(display = internal, isInternal = true)
-                } else {
-                    NoDisplayCard("内置显示器", "未识别出内置屏（可在下方手动指定）")
-                }
-            }
+            // ============================================================
+            // 主操作区 —— 只需要看这两个按钮
+            // ============================================================
+            item { PrimaryActionsCard(vm = vm, ui = ui) }
 
-            if (internal != null) {
+            // ============================================================
+            // 以下全部收进「高级选项」，默认收起
+            // ============================================================
+            item { AdvancedToggleRow(vm = vm, ui = ui) }
+
+            if (ui.advancedExpanded) {
                 item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { vm.turnOffInternal() },
-                            enabled = ui.shizuku.canControl && !ui.busy,
-                            modifier = Modifier.weight(1f),
-                        ) { Text("关闭平板屏幕") }
-                        OutlinedButton(
-                            onClick = { vm.turnOnInternal() },
-                            enabled = ui.shizuku.canControl && !ui.busy,
-                            modifier = Modifier.weight(1f),
-                        ) { Text("重新打开平板屏幕") }
+                    if (internal != null) {
+                        DisplayCard(display = internal, isInternal = true)
+                    } else {
+                        NoDisplayCard("内置显示器", "未识别出内置屏（可在下方手动指定）")
                     }
                 }
-                if (ui.internalTurnedOff) {
+
+                if (internal != null) {
                     item {
-                        Text(
-                            "注意：内屏已关闭。拔掉外接屏会自动恢复；也可以点上面的按钮手动恢复。",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.tertiary,
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { vm.turnOffInternal() },
+                                enabled = ui.shizuku.canControl && !ui.busy,
+                                modifier = Modifier.weight(1f),
+                            ) { Text("关闭平板屏幕") }
+                            OutlinedButton(
+                                onClick = { vm.turnOnInternal() },
+                                enabled = ui.shizuku.canControl && !ui.busy,
+                                modifier = Modifier.weight(1f),
+                            ) { Text("重新打开平板屏幕") }
+                        }
+                    }
+                    if (ui.internalTurnedOff) {
+                        item {
+                            Text(
+                                "注意：内屏已关闭。拔掉外接屏会自动恢复；也可以点上面的按钮手动恢复。",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.tertiary,
+                            )
+                        }
+                    }
+                }
+
+                item {
+                    if (external != null) {
+                        DisplayCard(display = external, isInternal = false)
+                    } else {
+                        NoDisplayCard(
+                            "外接显示器",
+                            "未检测到外接屏\n请通过 USB-C / DisplayPort Alt Mode 连接显示器",
                         )
                     }
                 }
-            }
 
-            // ---------------- 外接显示器 ----------------
-            item {
                 if (external != null) {
-                    DisplayCard(display = external, isInternal = false)
-                } else {
-                    NoDisplayCard(
-                        "外接显示器",
-                        "未检测到外接屏\n请通过 USB-C / DisplayPort Alt Mode 连接显示器",
-                    )
-                }
-            }
-
-            if (external != null) {
-                item { DisplayModeCard(vm = vm, ui = ui, external = external) }
-                item { MirrorFixCard(vm = vm, ui = ui, external = external) }
-                item { AudioOutputCard(vm = vm, ui = ui) }
-                item { ResolutionPicker(vm = vm, ui = ui, external = external) }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(
-                            onClick = { vm.applyResolution() },
-                            enabled = ui.shizuku.canControl && !ui.busy,
-                            modifier = Modifier.weight(1f),
-                        ) { Text("应用") }
-                        Button(
-                            onClick = { vm.applyBestResolution() },
-                            enabled = ui.shizuku.canControl && !ui.busy,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.secondary,
-                                contentColor = MaterialTheme.colorScheme.onSecondary,
-                            ),
-                            modifier = Modifier.weight(1f),
-                        ) { Text("使用最佳分辨率") }
+                    item { DisplayModeCard(vm = vm, ui = ui, external = external) }
+                    item { MirrorFixCard(vm = vm, ui = ui, external = external) }
+                    item { AudioOutputCard(vm = vm, ui = ui) }
+                    item { ResolutionPicker(vm = vm, ui = ui, external = external) }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = { vm.applyResolution() },
+                                enabled = ui.shizuku.canControl && !ui.busy,
+                                modifier = Modifier.weight(1f),
+                            ) { Text("应用") }
+                            Button(
+                                onClick = { vm.applyBestResolution() },
+                                enabled = ui.shizuku.canControl && !ui.busy,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = MaterialTheme.colorScheme.secondary,
+                                    contentColor = MaterialTheme.colorScheme.onSecondary,
+                                ),
+                                modifier = Modifier.weight(1f),
+                            ) { Text("使用最佳分辨率") }
+                        }
                     }
-                }
-                item {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(
-                            onClick = { vm.clearForcedSize() },
-                            enabled = ui.shizuku.canControl && !ui.busy,
-                            modifier = Modifier.weight(1f),
-                        ) { Text("清除尺寸覆盖") }
-                        OutlinedButton(
-                            onClick = { vm.runModeSelfCheck() },
-                            enabled = ui.shizuku.canControl && !ui.busy,
-                            modifier = Modifier.weight(1f),
-                        ) { Text("Mode 自检") }
+                    item {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedButton(
+                                onClick = { vm.clearForcedSize() },
+                                enabled = ui.shizuku.canControl && !ui.busy,
+                                modifier = Modifier.weight(1f),
+                            ) { Text("清除尺寸覆盖") }
+                            OutlinedButton(
+                                onClick = { vm.runModeSelfCheck() },
+                                enabled = ui.shizuku.canControl && !ui.busy,
+                                modifier = Modifier.weight(1f),
+                            ) { Text("Mode 自检") }
+                        }
                     }
+                    item { SupportedModesList(external) }
                 }
-                item { SupportedModesList(external) }
-            }
 
-            item { AutomationCard(vm = vm) }
+                item { AutomationCard(vm = vm) }
 
-            if (ui.displays.size >= 2) {
-                item { RoleOverrideCard(vm, ui) }
+                if (ui.displays.size >= 2) {
+                    item { RoleOverrideCard(vm, ui) }
+                }
             }
 
             item { EventLogCard(ui = ui) }
@@ -196,6 +210,133 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
             onCopy = { vm.copyDiagnostics(context) },
             onClose = { vm.closeDiagnostics() },
         )
+    }
+}
+
+/**
+ * 主操作区 —— 界面上只需要看这两个按钮。
+ *
+ * ① 一键开始 ＝ 你想要的最终效果；② 一键还原 ＝ 出问题时的救命按钮。
+ */
+@Composable
+private fun PrimaryActionsCard(vm: MainViewModel, ui: MainViewModel.UiState) {
+    var confirmRestore by remember { mutableStateOf(false) }
+
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.30f),
+        ),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text("① 一键开始", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "按顺序自动完成：外接屏独立显示（去掉黑边）→ 平板内屏保持点亮 → " +
+                    "声音留在平板（耳机/扬声器）→ 在外接屏打开应用。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = { vm.oneClickExtend() },
+                enabled = ui.shizuku.canControl && !ui.busy && ui.externalConnected,
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+            ) {
+                Text(
+                    if (!ui.externalConnected) "未检测到外接屏" else "一键开始（外接屏独立显示）",
+                    style = MaterialTheme.typography.titleSmall,
+                )
+            }
+            if (!ui.shizuku.canControl) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "需要先授权 Shizuku（见上方「系统权限」）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+
+            Spacer(Modifier.height(16.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(14.dp))
+
+            Text("② 一键还原（出问题时点这个）", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "把本应用改动过的所有系统状态恢复原样：内屏电源与窗口模式、输入设备关联、" +
+                    "音频输出固定、显示拓扑、尺寸覆盖。顺序上先点亮内屏，所以即使你正黑屏也能救回来。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = { confirmRestore = true },
+                enabled = !ui.busy,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError,
+                ),
+                modifier = Modifier.fillMaxWidth().height(52.dp),
+            ) {
+                Text("一键还原所有设置", style = MaterialTheme.typography.titleSmall)
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "若 Shizuku 已断开导致还原无效：重启设备一定能恢复（系统级状态都不落盘）。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+
+    if (confirmRestore) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmRestore = false },
+            title = { Text("确认还原所有设置？") },
+            text = {
+                Text(
+                    "会解除输入绑定、清除音频固定、还原显示拓扑与尺寸覆盖、" +
+                        "并把内屏恢复为点亮状态。\n\n这是安全的「恢复默认」，不会影响你的其他应用与数据。",
+                )
+            },
+            confirmButton = {
+                Button(onClick = {
+                    confirmRestore = false
+                    vm.restoreAll()
+                }) { Text("确认还原") }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmRestore = false }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+}
+
+/** 「高级选项」折叠开关 —— 默认收起，避免一屏塞满按钮。 */
+@Composable
+private fun AdvancedToggleRow(vm: MainViewModel, ui: MainViewModel.UiState) {
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clickable { vm.toggleAdvanced() }
+                .padding(14.dp),
+        ) {
+            Text(
+                if (ui.advancedExpanded) "▼ 高级选项（已展开）" else "▶ 高级选项（点开查看更多）",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "显示器详情、分辨率、音频输出、显示模式、输入绑定、屏幕位置、坐标空间排查" +
+                    " —— 平时不需要动",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -781,15 +922,25 @@ private fun MirrorFixCard(
                     modifier = Modifier.weight(1f),
                 ) { Text("探测是否支持") }
                 OutlinedButton(
-                    onClick = { vm.setScreenLayout(externalOnRight = true) },
+                    onClick = { vm.setScreenLayout(position = 0) },
                     enabled = ui.shizuku.canControl && !ui.busy,
                     modifier = Modifier.weight(1f),
-                ) { Text("外屏在右") }
+                ) { Text("在左") }
                 OutlinedButton(
-                    onClick = { vm.setScreenLayout(externalOnRight = false) },
+                    onClick = { vm.setScreenLayout(position = 1) },
                     enabled = ui.shizuku.canControl && !ui.busy,
                     modifier = Modifier.weight(1f),
-                ) { Text("外屏在左") }
+                ) { Text("在上") }
+                OutlinedButton(
+                    onClick = { vm.setScreenLayout(position = 2) },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("在右") }
+                OutlinedButton(
+                    onClick = { vm.setScreenLayout(position = 3) },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("在下") }
             }
 
             // ---------------- 光标错位 / 坐标空间 ----------------

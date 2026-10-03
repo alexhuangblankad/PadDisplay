@@ -324,6 +324,14 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine("系统首选 Mode: " + (resolutionController.readSystemPreferredMode(displayId) ?: "(读不到)"))
     })
 
+    /** 方向名（对应 AOSP `TreeNode.POSITION_*`）。 */
+    private fun positionName(position: Int): String = when (position) {
+        DisplayTopologyController.POSITION_LEFT -> "左侧"
+        DisplayTopologyController.POSITION_TOP -> "上方"
+        DisplayTopologyController.POSITION_RIGHT -> "右侧"
+        DisplayTopologyController.POSITION_BOTTOM -> "下方"
+        else -> "位置($position)"
+    }
     /** 诊断 shell 环境：确认 wm / dumpsys 真的能跑（带绝对路径对照）。 */
     override fun probeShellEnvironment(): String = clean(buildString {
         appendLine("=== shell 环境自检 ===")
@@ -342,6 +350,105 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
             appendLine()
         }
     })
+
+    /**
+     * 一键还原：把本应用可能改动过的**所有**系统状态恢复。
+     *
+     * 顺序是刻意安排的：
+     * 1. **先点亮内屏**（最高优先：保证用户看得见界面，不会黑屏）
+     * 2. 内屏窗口模式还原 FULLSCREEN
+     * 3. 解除所有输入设备关联（这一步只读+还原，不改危险状态）
+     * 4. 清除音频输出固定
+     * 5. 还原显示拓扑（若之前存过快照）
+     * 6. 清除逻辑尺寸覆盖 + 重置用户首选 Mode
+     */
+    override fun restoreAll(): String {
+        val sb = StringBuilder()
+        sb.appendLine("=== 一键还原所有设置 ===")
+        sb.appendLine("uid=${android.os.Process.myUid()}")
+        sb.appendLine()
+
+        // 1) 先点亮内屏（保证用户看得见）
+        runCatching {
+            val internal = resolveInternalDisplayIdViaContext()
+            sb.appendLine("[1] 恢复内屏电源")
+            val reports = powerController.setPower(internal, DisplayPowerController.POWER_MODE_NORMAL)
+            reports.forEach { sb.appendLine("    " + it.toText()) }
+        }.onFailure { sb.appendLine("[1] 失败: ${Reflect.describe(it)}") }
+        sb.appendLine()
+
+        // 2) 内屏窗口模式还原 FULLSCREEN
+        runCatching {
+            val internal = resolveInternalDisplayIdViaContext()
+            sb.appendLine("[2] 还原内屏窗口模式为 FULLSCREEN")
+            sb.appendLine("    " + mirrorController.setWindowingMode(
+                internal,
+                DisplayMirrorController.WINDOWING_MODE_FULLSCREEN,
+            ).toText())
+        }.onFailure { sb.appendLine("[2] 失败: ${Reflect.describe(it)}") }
+        sb.appendLine()
+
+        // 3) 解除输入关联
+        runCatching {
+            sb.appendLine("[3] 解除所有输入设备关联")
+            val reports = inputController.clearAllAssociations()
+            sb.appendLine("    处理条目数 = ${reports.size}")
+            reports.filter { !it.ok }.take(5).forEach { sb.appendLine("    " + it.toText()) }
+        }.onFailure { sb.appendLine("[3] 失败: ${Reflect.describe(it)}") }
+        sb.appendLine()
+
+        // 4) 清除音频输出固定
+        runCatching {
+            sb.appendLine("[4] 清除音频输出固定")
+            audioController.unpinMediaOutput().forEach { sb.appendLine("    " + it.toText()) }
+        }.onFailure { sb.appendLine("[4] 失败: ${Reflect.describe(it)}") }
+        sb.appendLine()
+
+        // 5) 还原显示拓扑
+        runCatching {
+            sb.appendLine("[5] 还原显示拓扑")
+            if (!topologyController.isSupported()) {
+                sb.appendLine("    本机不支持 DisplayTopology，跳过")
+            } else {
+                val snap = loadTopologySnapshot()
+                if (snap == null) {
+                    sb.appendLine("    没有拓扑快照（本应用从未改过拓扑），跳过")
+                } else {
+                    sb.appendLine("    " + topologyController.restoreTopologyBytes(snap.second).toText())
+                    clearTopologySnapshot()
+                }
+            }
+        }.onFailure { sb.appendLine("[5] 失败: ${Reflect.describe(it)}") }
+        sb.appendLine()
+
+        // 6) 清除尺寸覆盖与用户首选 Mode
+        runCatching {
+            sb.appendLine("[6] 清除逻辑尺寸覆盖 / 重置首选 Mode")
+            val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            dm?.displays?.forEach { d ->
+                resolutionController.clearForcedDisplaySize(d.displayId).forEach {
+                    sb.appendLine("    " + d.displayId + " " + it.toText())
+                }
+                sb.appendLine("    " + d.displayId + " " + resolutionController.resetUserPreferredMode(d.displayId).toText())
+            }
+        }.onFailure { sb.appendLine("[6] 失败: ${Reflect.describe(it)}") }
+        sb.appendLine()
+
+        sb.appendLine("RESULT_OK=true")
+        sb.appendLine("还原完成。建议重新插拔外接屏让系统重新计算显示策略。")
+        return clean(sb.toString())
+    }
+
+    /** 在 UserService 侧解析内屏 displayId（枚举 → 默认屏）。 */
+    private fun resolveInternalDisplayIdViaContext(): Int {
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        val displays = runCatching { dm?.displays }.getOrNull().orEmpty()
+        displays.forEach { d ->
+            val type = Reflect.call(d, "getType").getOrNull() as? Int
+            if (type == com.paddisplay.app.display.DisplayDetector.DisplayType.INTERNAL) return d.displayId
+        }
+        return android.view.Display.DEFAULT_DISPLAY
+    }
 
     /**
      * 镜像状态探针。
@@ -486,24 +593,78 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
 
     override fun probeDisplayTopology(): String = clean(topologyController.describe())
 
+    /**
+     * 拓扑快照文件。
+     *
+     * `setDisplayTopology` 是整体替换，**必须先存原始值才能还原**。
+     * 存在 UserService 进程的私有目录里，作为「一键还原」的依据。
+     */
+    private val topologySnapshotFile: java.io.File?
+        get() = injectedContext?.getFileStreamPath("display_topology_snapshot.bin")
+
+    private fun saveTopologySnapshot() {
+        runCatching {
+            val result = topologyController.snapshotTopologyBytes() ?: return
+            val (ok, bytes) = result
+            if (!ok) return
+            val f = topologySnapshotFile ?: return
+            if (f.exists()) return // 已有快照就不覆盖，保留最初的原始值
+            java.io.DataOutputStream(f.outputStream()).use { out ->
+                if (bytes == null) {
+                    out.writeBoolean(false)
+                } else {
+                    out.writeBoolean(true)
+                    out.writeInt(bytes.size)
+                    out.write(bytes)
+                }
+            }
+            AidlCodec.callLog.add("已保存显示拓扑快照（${bytes?.size ?: 0} 字节）")
+        }.onFailure {
+            AidlCodec.callLog.add("保存拓扑快照失败：${Reflect.describe(it)}")
+        }
+    }
+
+    private fun loadTopologySnapshot(): Pair<Boolean, ByteArray?>? {
+        val f = topologySnapshotFile ?: return null
+        if (!f.exists()) return null
+        return runCatching {
+            java.io.DataInputStream(f.inputStream()).use { input ->
+                val hasBytes = input.readBoolean()
+                if (!hasBytes) {
+                    true to null
+                } else {
+                    val n = input.readInt()
+                    val buf = ByteArray(n)
+                    input.readFully(buf)
+                    true to buf
+                }
+            }
+        }.getOrNull()
+    }
+
+    private fun clearTopologySnapshot() {
+        runCatching { topologySnapshotFile?.delete() }
+    }
+
     override fun setDisplayTopologyLayout(
         primaryDisplayId: Int,
         otherDisplayId: Int,
-        otherOnRight: Boolean,
+        position: Int,
         primaryWidth: Int,
         primaryHeight: Int,
         otherWidth: Int,
         otherHeight: Int,
     ): String = clean(buildString {
         appendLine("=== 设置多屏左右布局 ===")
+        // 改拓扑前先存原始快照，供「一键还原」用（只存第一次）
+        saveTopologySnapshot()
         appendLine("原点显示器 displayId=$primaryDisplayId (${primaryWidth}x$primaryHeight)")
-        appendLine("另一块 displayId=$otherDisplayId (${otherWidth}x$otherHeight) 放在" +
-            (if (otherOnRight) "右" else "左") + "侧")
+        appendLine("另一块 displayId=$otherDisplayId (${otherWidth}x$otherHeight) 放在 ${positionName(position)}")
         appendLine()
-        val reports = topologyController.setHorizontalLayout(
+        val reports = topologyController.setLayout(
             primaryDisplayId = primaryDisplayId,
             otherDisplayId = otherDisplayId,
-            otherOnRight = otherOnRight,
+            position = position,
             primarySize = primaryWidth to primaryHeight,
             otherSize = otherWidth to otherHeight,
         )

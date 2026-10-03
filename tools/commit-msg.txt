@@ -1,53 +1,63 @@
-v0.3.2: 光标错位的根因（坐标空间被应用缩放污染）+ 坐标空间对照工具
+v0.3.3: 界面重排（一键开始 / 一键还原 + 高级选项折叠 + 上下左右）
 
-## 根因类别定位
+## 前端重做
 
-参考项目 AdaptiveScreenPlus 的 CursorOverlay / ExtScreen 里踩透并写成了警告：
-- 范围必须从系统那一侧量，不能问 Display：display context 的
-  getResources().getDisplayMetrics() 会被本应用的兼容缩放污染 ——
-  实测内屏 1920x1080 被报成 1496x1242，光标被夹在 x<=1495，右侧 424px 够不到。
-- Display 的 getRealSize/getMetrics 会串应用缩放，getMode() 又不认 wm size 覆盖。
-- 系统只给真实鼠标（USB/uinput）画指针，应用侧注入的事件不会点亮它，
-  非 root 没有接口，只能自己挂应用悬浮窗当光标。
+之前把 8 个功能平铺一页、按钮几十个，用户不知道该点哪个。现在打开只有两件事：
 
-所以用户的现象是两类问题叠加：
-1. 坐标空间取错源：事件按一套空间算、光标按另一套画；两块屏尺度不同（内屏
-   2520x1680 / 外屏 3840x2160）误差被放大，表现为"飘逸"。
-2. 物理鼠标绑定让错位更明显：系统把指针画在默认屏，事件却被绑到外屏。
+  系统状态（Shizuku / 外接屏）
+  ① 一键开始（外接屏独立显示）
+  ② 一键还原所有设置
+  ▶ 高级选项（点开查看更多）  ← 其余全部收在这里，默认收起
 
-## 本版改动
+### ① 一键开始
 
-1. 新增「对照坐标空间」：解析 dumpsys window displays 里每块屏的 cur=WxH
-   （WindowManager 眼里的逻辑尺寸，已算上旋转与 wm size 覆盖，
-   与 input -d N tap x y / screencap 同一套坐标系），
-   并把 Display.getRealSize()/getMetrics() 的读数并排显示以暴露污染。
-2. 新增「外屏注入点击」：按 cur=WxH 空间注入点击，坐标自动夹取并告知是否夹取。
-3. 新增 CoordinateSpaceProbe.kt 实现上述解析与注入。
+按顺序自动完成：
+1. 外接屏切独立显示（去黑边）
+2. 平板内屏保持点亮
+3. 声音切回平板侧（耳机/扬声器），防止显示器抢音频
+4. 在外接屏打开应用，形成第二个桌面
 
-## 三个参考项目的结论
+### ② 一键还原（救命按钮）
 
-- connect-screen：从 android-display-extend 派生，用虚拟显示器（非物理便携屏）。
-- SmartDock DFC：前置桌面 + 强制桌面模式，提供桌面外观但不解决输入坐标。
-- AdaptiveScreenPlus：自挂光标浮层 + 注入事件到目标屏，坐标取自
-  dumpsys window displays —— 这才是正确架构。
+恢复本应用改动过的所有系统级状态：
+  内屏：先点亮，再还原窗口模式为 FULLSCREEN
+  输入设备：解除全部关联
+  音频：清除媒体策略固定 + 通话固定
+  显示拓扑：写回改动前保存的快照
+  尺寸/Mode：清除逻辑尺寸覆盖 + 重置用户首选 Mode
 
-结论：非 root 下要让第二块屏能用，不是去绑物理鼠标，而是自己画光标 + 自己注入事件。
+顺序刻意设计为先点亮内屏，所以即使黑屏也能救回来。点之前有确认弹窗。
+若 Shizuku 已断开导致还原无效：重启设备一定能恢复（系统态不落盘）。
 
-## 请先做这一步
+### 拓扑快照
 
-先点「解除绑定」清掉鼠标绑定（鼠标飘逸应该是它引起的），再看坐标空间对照输出。
+为了让一键还原能真的还拓扑，本版在改拓扑之前自动保存一份原始快照
+（存在 UserService 私有目录），还原时写回。之前只改不存，是还不回来的。
 
-## 下一步需要的数据
+### 屏幕位置四方向
 
-1. 解除绑定后鼠标飘逸是否消失
-2. 坐标空间对照输出（两块屏的 cur=WxH）
-3. 输入设备列表里 external=true 的设备
+补全：在左 / 在上 / 在右 / 在下，对应 AOSP TreeNode.POSITION_LEFT/TOP/RIGHT/BOTTOM。
+（本机 DisplayTopology feature flag 关闭，这四个按钮目前大概率仍报未生效，
+但不隐藏，因为需要看到试过以及为什么不行。）
 
-拿到 cur=WxH 即可判断是坐标空间取错，还是 ColorOS 的指针绘制与输入空间本就分离。
-若是后者，按 AdaptiveScreenPlus 的路子做「自绘光标 + 注入」的触控板，不再碰物理绑定。
+### 其余按钮
+
+全部移进「▶ 高级选项」：显示器详情、关屏开屏、显示模式、黑边/镜像诊断、
+音频输出、分辨率与刷新率、Mode 自检、自动操作开关、手动指定屏幕角色、
+输入绑定、屏幕位置、坐标空间排查。
+
+## 新增/修改文件
+
+- MainScreen.kt：PrimaryActionsCard（两个大按钮 + 确认弹窗）、AdvancedToggleRow、
+  LazyColumn 结构重排、四方向按钮
+- MainViewModel.kt：oneClickExtend / restoreAll / toggleAdvanced / positionLabel、
+  UiState.advancedExpanded
+- SystemDisplayService.kt：restoreAll / oneClickExtend
+- PadDisplayUserService.kt：restoreAll 实现（含先点亮内屏的顺序）、拓扑快照存取
+- DisplayTopologyController.kt：snapshotTopologyBytes / restoreTopologyBytes、
+  setLayout 支持四方向
+- IPadDisplayService.aidl：restoreAll、position 参数化
 
 ## 说明
 
-- 依然没有真机验证。
-- 本版没有自动解除绑定，因为无法确定绑定是否为飘逸成因，需用户先手动验证一次，
-  避免再次"猜着改"。
+依然没有真机验证。本版重点是让界面能用，不是加新功能。

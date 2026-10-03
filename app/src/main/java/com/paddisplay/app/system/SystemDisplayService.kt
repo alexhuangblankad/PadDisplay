@@ -569,7 +569,7 @@ class SystemDisplayService(
     suspend fun setDisplayTopologyLayout(
         primaryDisplayId: Int,
         otherDisplayId: Int,
-        otherOnRight: Boolean,
+        position: Int,
         primarySize: Pair<Int, Int>,
         otherSize: Pair<Int, Int>,
     ): OpResult = withContext(Dispatchers.IO) {
@@ -579,7 +579,7 @@ class SystemDisplayService(
             val out = svc.setDisplayTopologyLayout(
                 primaryDisplayId,
                 otherDisplayId,
-                otherOnRight,
+                position,
                 primarySize.first,
                 primarySize.second,
                 otherSize.first,
@@ -589,7 +589,9 @@ class SystemDisplayService(
             OpResult(
                 ok,
                 if (ok) {
-                    "已设置：$otherDisplayId 在" + (if (otherOnRight) "右" else "左") + "侧"
+                    "已设置：$otherDisplayId 位于" + when (position) {
+                        0 -> "左侧"; 1 -> "上方"; 2 -> "右侧"; 3 -> "下方"; else -> "位置($position)"
+                    }
                 } else {
                     "设置未生效（很可能是 DisplayTopology 在本机关闭）"
                 },
@@ -611,6 +613,87 @@ class SystemDisplayService(
             val ok = out.contains("RESULT_OK=true")
             OpResult(ok, if (ok) "已启动到桌面 $displayId" else "启动失败", out.lines().filter { it.isNotBlank() })
         }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+
+    // ------------------------------------------------------------------
+    // 一键操作
+    // ------------------------------------------------------------------
+
+    /**
+     * 一键还原所有设置。
+     *
+     * 覆盖：内屏电源与窗口模式、输入关联、音频固定、显示拓扑、尺寸覆盖、首选 Mode。
+     * 顺序由 UserService 安排为「先点亮内屏」，保证用户不会黑屏。
+     */
+    suspend fun restoreAll(): OpResult = withContext(Dispatchers.IO) {
+        service()?.let { svc ->
+            runCatching {
+                val out = svc.restoreAll()
+                OpResult(
+                    out.contains("RESULT_OK=true"),
+                    "已还原所有设置",
+                    out.lines().filter { it.isNotBlank() },
+                )
+            }.getOrElse { OpResult(false, "还原失败", listOf(Reflect.describe(it))) }
+        } ?: OpResult(
+            ok = false,
+            title = "Shizuku 未连接，无法还原系统级设置",
+            lines = listOf(
+                "本应用改动的是系统级状态（输入关联 / 音频固定 / 拓扑 / 尺寸覆盖），",
+                "没有 Shizuku 就改不回来。",
+                "万一卡住：重启设备一定能恢复。",
+            ),
+        )
+    }
+
+    /**
+     * 一键完成「我要的效果」。
+     *
+     * 顺序：扩展屏 → 内屏保持点亮 → 音频留在平板侧 → 外屏开应用形成第二个桌面。
+     */
+    suspend fun oneClickExtend(): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+
+        val internal = internalDisplay()
+        val external = repo.primaryExternalDisplay()
+        if (external == null) {
+            return@withContext OpResult(
+                false,
+                "未检测到外接显示器",
+                listOf("请先用 USB-C / DisplayPort Alt Mode 连上显示器，再点这个按钮。"),
+            )
+        }
+
+        val lines = mutableListOf<String>()
+
+        // 1) 扩展
+        val ext = applyExtendMode(external.displayId)
+        lines += (if (ext.ok) "✅ " else "❌ ") + ext.title
+        ext.lines.take(4).forEach { lines += "    $it" }
+
+        // 2) 内屏保持点亮
+        if (internal != null) {
+            val on = restoreInternalDisplayWithRetry(attempts = 2)
+            lines += (if (on.ok) "✅ " else "❌ ") + "内屏保持点亮"
+        }
+
+        // 3) 音频留在平板侧
+        runCatching {
+            val snapshot = audio.routingSnapshot()
+            if (snapshot.stolenByDisplay && snapshot.suggested != null) {
+                val r = setAudioOutputDevice(snapshot.suggested.id, pinMedia = true, pinComm = false)
+                lines += (if (r.ok) "✅ " else "⚠️ ") + "音频切回「${snapshot.suggested.typeName}」"
+            } else {
+                lines += "✅ 音频未被显示器占用，无需处理"
+            }
+        }.onFailure { lines += "⚠️ 音频检查失败：${Reflect.describe(it)}" }
+
+        // 4) 外屏开一个应用，形成第二个桌面
+        val launch = launchAppOnDisplay(external.displayId, component = "com.android.settings/.Settings")
+        lines += (if (launch.ok) "✅ " else "❌ ") + "已在外接屏打开第二个桌面"
+
+        OpResult(ok = ext.ok && launch.ok, title = "一键完成：外接屏已独立显示", lines = lines)
     }
 
     // ------------------------------------------------------------------
