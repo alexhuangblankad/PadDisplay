@@ -1,56 +1,96 @@
-v0.6.1: 修掉日志无信息量的问题 —— 改用 shell settings 并打印完整失败原因
+docs: 鼠标跨屏需求广泛调研 —— 结论：编译期开关，非 root 无解
 
-## 用户日志暴露的两个实现错误
+## 调研触发
 
-### 1. -999 是自己的哨兵值，不是真实值
+用户实测反馈：强制桌面模式后桌面"很失败，只能触屏使用"。
+用户要求：先广泛找相关开源软件，再写代码；并提出可能需刷原生 Android 17。
 
-日志里 "development_force_desktop_mode_on_external_displays: -999 -> -999 (写入返回 false)"
-中的 -999 是代码里读取失败时返回的占位值，真实含义是"根本没读到这个键"。
+## 决定性发现
 
-### 2. 异常被吞掉（违反任务书第 15 条）
+### 1. 这是 Android 16 QPR3 的官方功能
 
-写入走 ContentResolver 且外包 runCatching，抛出的 SecurityException /
-IllegalArgumentException 全被吃掉，所以看不到失败原因。任务书第 15 条要求必须打印
-完整异常，此前漏做。
+Android Developers 官方博客（2026-03-03）与 IT 之家（2026-03-05）报道：
+针对支持桌面窗口化管理的平板，连接后桌面会话扩展至两块屏，
+"应用窗口、内容以及鼠标光标均可在平板屏幕与外接显示器之间自由穿梭"。
 
-## 本版改动
+### 2. 但它是编译期常量，AOSP 默认关闭
 
-### 1. 改用 shell settings 命令（等同 adb shell settings put）
+frameworks/base/core/res/res/values/config.xml（AOSP main）：
+    <!-- Whether desktop mode is supported on the current device  -->
+    <bool name="config_isDesktopModeSupported">false</bool>
 
-每行输出包含：
-  写入前值（含"键不存在或读取失败"提示）
-  命令: /system/bin/settings put global <key> <v>
-  输出: <settings 真实输出>
-  读回: <实际值>
-  失败原因
+默认 false —— 每个 OEM 必须在产品 overlay 里改成 true。
+目标设备该值为 false（此前已探测）。
 
-settings 自身报错（SecurityException / unknown setting / BadUser）会原样显示。
+### 3. display_topology 是 read-only aconfig flag
 
-### 2. 新增决定性诊断：全量 dump 搜关键词
+display_flags.aconfig（android-16.0.0-r1）：
+    flag {
+        name: "display_topology"
+        namespace: "display_manager"
+        description: "Display topology for moving cursors and windows between extended displays"
+        bug: "364906028"
+        is_fixed_read_only: true
+    }
+AOSP 文档：只读 aconfig 标志是布尔常量，无法在运行时更改。
 
-执行 settings list global 并搜索 desktop / freeform / multi_window /
-resizable / force_desktop：
-- 搜到 -> 键存在，属权限或策略问题
-- 一条都没有 -> 键在 ColorOS SettingsProvider 中根本未注册，
-  即不是权限问题，是 ROM 移除了这些开发者选项
+### 4. setPointerDisplayId 不是 Binder 服务
 
-可一次性判定属于哪种情况。
+NativeInputManagerService.setPointerDisplayId 是 native 本地接口，
+全 AOSP 只有一处调用：IMS.setDisplayViewportsInternal() ->
+mNative.setPointerDisplayId(mWindowManagerCallbacks.getPointerDisplayId())。
+App / Shizuku / adb 均无法直接调用。
 
-### 3. 顺带报告 settings 命令本身是否可用
+### 5. DisplayTopology 类是 @hide
 
-（which settings、settings --help 前几行），排除命令环境问题。
+core/java/android/hardware/display/DisplayTopology.java 类注释含 @hide，
+第三方应用不能直接使用。
 
-## 测试步骤
+### 6. 社区唯一开启方案需要 root
 
-1. 桌面模式 -> 探测桌面模式能力（看"关键诊断"与"settings 命令是否可用"）
-2. 桌面模式 -> 开启桌面模式（看每行的「命令」与「输出」）
+igorb200828/Android_16_Desktop_Experience_Enabler 是 LSPosed 模块，
+用于开启开发者选项的 "Enable desktop experience features"，
+需要 root，且自述仅适用于 Android 16 QPR1 Beta 1。
 
-## 不预设结论
+## 为何"强制桌面模式"体验很差
 
-若 dump 搜不到这些键，说明 ColorOS 从 ROM 层面移除了桌面模式相关开发者选项，
-该路线在目标机器上同样不可行，会明确说明并停止在此投入。
-若搜到但写入被拒，则可能属权限或策略，另寻可调用的接口。
+WMS 中该字段注释仍含未完成事项：
+    - Enable system decorations and IME on external screen.
+    - TODO: Show mouse pointer on external screen.
+且 getPointerDisplayId() 的 freeform 分支只把指针放到某一块屏，
+不提供两块屏之间的连续坐标空间（那需要 display_topology）。
 
-## 说明
+## 开源方案全景（逐个读过）
 
-依然没有真机验证。本版为纯诊断改进：把"看不到原因"变成"原因直接打出来"。
+- Dextop / connect-screen：虚拟显示器，非物理外接屏
+- AdaptiveScreenPlus / deskpad-app：自绘光标 + 注入或无障碍手势（非原生指针）
+- AirBeam：AirMouse / 触控板形态
+- Taskbar / Smart Dock：只解决桌面外观
+- igorb200828 Enabler：LSPosed，需 root
+
+负面结论：没有任何非 root 开源项目实现"系统原生指针在两块物理屏之间穿梭"。
+
+## 三条路代价对照
+
+A. 刷原生 Android 17 / 支持 Connected Display 的 ROM：能实现，官方原生体验；
+   代价是失去 ColorOS 功能、保修、变砖风险
+B. root + LSPosed：可能能，但 display_topology 是编译期 flag，root 也未必能开
+C. 非原生替代（自绘光标 + 注入）：不是原生指针，破坏 Moonlight，用户已否掉
+D. 只换桌面壳：指针问题依旧
+
+用户"可能真要刷机"的判断在技术上成立，且期望收益最高。
+
+## 新增文件
+
+- docs/pointer-spanning-research.md：完整调研报告
+- tools/aosp-snapshots/InputManagerCallback.api36.java：getPointerDisplayId 实现证据
+- tools/aosp-snapshots/display_flags.api36.aconfig：display_topology flag 定义证据
+- tools/aosp-snapshots/DisplayTopology.main.java：@hide 证据
+
+## 后续建议
+
+1. 先确认该机型 ROM 现状（是否有原生/第三方 ROM、bootloader 能否解锁）
+2. 刷机前 PadDisplay 保留为显示器控制工具（分辨率/刷新率/内屏开关/音频路由）
+3. 若刷机可行，拓扑可用时只需做布局设置，工作量很小
+
+不再继续：settings put global 路线、自绘光标路线、在 ColorOS 上尝试半开桌面模式。
