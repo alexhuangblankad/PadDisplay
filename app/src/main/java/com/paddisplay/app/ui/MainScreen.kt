@@ -95,6 +95,9 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
             // ============================================================
             // 以下全部收进「高级选项」，默认收起
             // ============================================================
+            // 应用抽屉 —— 外接屏的「开始菜单」，这是你要的"桌面"
+            item { AppDrawerCard(vm = vm, ui = ui) }
+
             item { AdvancedToggleRow(vm = vm, ui = ui) }
 
             if (ui.advancedExpanded) {
@@ -311,6 +314,102 @@ private fun PrimaryActionsCard(vm: MainViewModel, ui: MainViewModel.UiState) {
                 }
             },
         )
+    }
+}
+
+/**
+ * 应用抽屉 —— 外接屏的「开始菜单」。
+ *
+ * 为什么需要它：早先启动应用时**写死了 `com.android.settings/.Settings`**，
+ * 所以外接屏上只能打开「设置」。要开别的应用必须先解析它们的 launcher 组件，
+ * 这里就是把整份应用清单列出来，让你点一下就能开到外接屏。
+ */
+@Composable
+private fun AppDrawerCard(vm: MainViewModel, ui: MainViewModel.UiState) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { vm.toggleAppDrawer() },
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        if (ui.appDrawerExpanded) "▼ 打开应用到外接屏" else "▶ 打开应用到外接屏（点开应用列表）",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        "相当于外接屏的「开始菜单」：点应用名就把它开在外接屏上。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            if (ui.appDrawerExpanded) {
+                Spacer(Modifier.height(10.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { vm.refreshLaunchableApps() },
+                        enabled = ui.shizuku.canControl && !ui.busy,
+                        modifier = Modifier.weight(1f),
+                    ) { Text("刷新列表（${ui.launchableApps.size}）") }
+                }
+                Spacer(Modifier.height(8.dp))
+
+                if (!ui.shizuku.canControl) {
+                    Text(
+                        "需要 Shizuku 才能把应用启动到外接屏。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                } else if (ui.launchableApps.isEmpty()) {
+                    Text(
+                        "还没有应用列表，点上面的「刷新列表」。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                ui.launchableApps.take(40).forEach { app ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            app.label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.weight(1f),
+                        )
+                        OutlinedButton(
+                            onClick = { vm.launchAppOnExternal(app) },
+                            enabled = !ui.busy && ui.externalConnected,
+                        ) { Text("外屏") }
+                        Spacer(Modifier.width(6.dp))
+                        OutlinedButton(
+                            onClick = { vm.launchAppOnInternal(app) },
+                            enabled = !ui.busy,
+                        ) { Text("内屏") }
+                    }
+                }
+                if (ui.launchableApps.size > 40) {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "… 另有 ${ui.launchableApps.size - 40} 个应用未显示",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
     }
 }
 

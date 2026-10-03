@@ -181,6 +181,20 @@ interface IPadDisplayService {
      */
     String restoreAll();
 
+    // ------------------------------------------------------------------
+    // 应用启动器（外接屏的「开始菜单」）
+    //
+    // 早先只写死了「设置」一个组件，所以用户只能在外屏开设置。
+    // 正确做法：解析每个应用的 launcher Activity 组件，再用
+    // `am start --display N -n <组件>` 启动到目标屏。
+    // ------------------------------------------------------------------
+
+    /** 列出所有可启动的应用：包名|标签|组件。 */
+    String listLaunchableApps();
+
+    /** 把指定包名的主 Activity 启动到目标屏。 */
+    String launchPackageOnDisplay(int displayId, String packageName);
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 

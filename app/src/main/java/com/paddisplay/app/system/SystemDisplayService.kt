@@ -616,6 +616,40 @@ class SystemDisplayService(
     }
 
     // ------------------------------------------------------------------
+    // 应用启动器（外接屏的「开始菜单」）
+    // ------------------------------------------------------------------
+
+    /** 一个可启动的应用。 */
+    data class LaunchableApp(val packageName: String, val label: String, val component: String)
+
+    /** 列出所有可启动应用（解析 launcher Activity 组件）。 */
+    suspend fun listLaunchableApps(): List<LaunchableApp> = withContext(Dispatchers.IO) {
+        val svc = service() ?: return@withContext emptyList()
+        runCatching {
+            svc.listLaunchableApps()
+                .lineSequence()
+                .map { it.trim() }
+                .filter { it.split("|").size >= 3 }
+                .map { line ->
+                    val parts = line.split("|")
+                    LaunchableApp(parts[0], parts[1], parts[2])
+                }
+                .toList()
+        }.getOrDefault(emptyList())
+    }
+
+    /** 把指定包名启动到目标屏。 */
+    suspend fun launchPackageOnDisplay(displayId: Int, packageName: String): OpResult =
+        withContext(Dispatchers.IO) {
+            val (svc, err) = requireService()
+            if (svc == null) return@withContext err!!
+            runCatching {
+                val out = svc.launchPackageOnDisplay(displayId, packageName)
+                val ok = out.contains("RESULT_OK=true")
+                OpResult(ok, if (ok) "已启动到外接屏" else "启动失败", out.lines().filter { it.isNotBlank() })
+            }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+        }
+    // ------------------------------------------------------------------
     // 一键操作
     // ------------------------------------------------------------------
 

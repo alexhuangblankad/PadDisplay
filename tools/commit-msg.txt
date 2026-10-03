@@ -1,63 +1,54 @@
-v0.3.3: 界面重排（一键开始 / 一键还原 + 高级选项折叠 + 上下左右）
+v0.4.0: 应用抽屉（外接屏的开始菜单）—— 修掉"只能开设置"
 
-## 前端重做
+## 只能打开设置的原因（实现缺陷）
 
-之前把 8 个功能平铺一页、按钮几十个，用户不知道该点哪个。现在打开只有两件事：
+早先启动应用时写死了 com.android.settings/.Settings 这个组件，
+所以外接屏上只能打开设置。另外那条代码用 am start -p <包名>，
+而 am start 期望的是 component（-n），-p 不可靠。
+因此只有显式给了 -n 的设置能成功。
 
-  系统状态（Shizuku / 外接屏）
-  ① 一键开始（外接屏独立显示）
-  ② 一键还原所有设置
-  ▶ 高级选项（点开查看更多）  ← 其余全部收在这里，默认收起
+## 本版修好：应用抽屉
 
-### ① 一键开始
+主界面（不用进高级选项）新增「打开应用到外接屏」：
+- 解析设备上所有应用的 launcher Activity 组件
+- 列出应用清单，每个应用后有「外屏」「内屏」两个按钮
+- 外屏走 am start --display <外接屏id> -n <组件>（系统自带能力，已验证可满屏 4K）
 
-按顺序自动完成：
-1. 外接屏切独立显示（去黑边）
-2. 平板内屏保持点亮
-3. 声音切回平板侧（耳机/扬声器），防止显示器抢音频
-4. 在外接屏打开应用，形成第二个桌面
+底层是 am start --display，这次用正确的 component 形式并覆盖所有应用。
 
-### ② 一键还原（救命按钮）
+## 鼠标跨屏：明确做不到，原因已查清
 
-恢复本应用改动过的所有系统级状态：
-  内屏：先点亮，再还原窗口模式为 FULLSCREEN
-  输入设备：解除全部关联
-  音频：清除媒体策略固定 + 通话固定
-  显示拓扑：写回改动前保存的快照
-  尺寸/Mode：清除逻辑尺寸覆盖 + 重置用户首选 Mode
+AOSP 里指针跨屏能力来自 DisplayTopology：
+    if (mFlags.isDisplayTopologyEnabled()) {
+        mInputManagerInternal.setDisplayTopology(graph);
+    }
+而该机探测结果为 supported=false、系统返回 null，说明 ColorOS 关闭了该 feature flag。
+服务端 mDisplayTopologyCoordinator == null，setDisplayTopology 是静默空操作。
+要打开必须改系统 framework flag，需要 root，超出用户设定的边界。
 
-顺序刻意设计为先点亮内屏，所以即使黑屏也能救回来。点之前有确认弹窗。
-若 Shizuku 已断开导致还原无效：重启设备一定能恢复（系统态不落盘）。
+因此：
+- 两个桌面（外屏独立跑应用）：可以，本版应用抽屉让它真正可用
+- 鼠标不飘逸：用户已验证修好
+- 分辨率：4K@60 本就是外屏原生模式
+- 鼠标跨屏拖拽 / 两屏左右上下位置：需要 DisplayTopology，非 root 无解
 
-### 拓扑快照
+## 若要鼠标跨屏，只有两条路
 
-为了让一键还原能真的还拓扑，本版在改拓扑之前自动保存一份原始快照
-（存在 UserService 私有目录），还原时写回。之前只改不存，是还不回来的。
-
-### 屏幕位置四方向
-
-补全：在左 / 在上 / 在右 / 在下，对应 AOSP TreeNode.POSITION_LEFT/TOP/RIGHT/BOTTOM。
-（本机 DisplayTopology feature flag 关闭，这四个按钮目前大概率仍报未生效，
-但不隐藏，因为需要看到试过以及为什么不行。）
-
-### 其余按钮
-
-全部移进「▶ 高级选项」：显示器详情、关屏开屏、显示模式、黑边/镜像诊断、
-音频输出、分辨率与刷新率、Mode 自检、自动操作开关、手动指定屏幕角色、
-输入绑定、屏幕位置、坐标空间排查。
+1. root 后打开该 feature flag（用户已表示不做 root）
+2. 改用手势控制：参考 AdaptiveScreenPlus 的做法，在平板上做触控板页面，
+   用 IInputManager.injectInputEvent + MotionEvent.setDisplayId 把触摸注入到外接屏，
+   并自绘光标浮层（系统只给真实鼠标画指针）。这不是"鼠标跨屏"，
+   而是"用平板当外接屏的触控板"。等用户选择。
 
 ## 新增/修改文件
 
-- MainScreen.kt：PrimaryActionsCard（两个大按钮 + 确认弹窗）、AdvancedToggleRow、
-  LazyColumn 结构重排、四方向按钮
-- MainViewModel.kt：oneClickExtend / restoreAll / toggleAdvanced / positionLabel、
-  UiState.advancedExpanded
-- SystemDisplayService.kt：restoreAll / oneClickExtend
-- PadDisplayUserService.kt：restoreAll 实现（含先点亮内屏的顺序）、拓扑快照存取
-- DisplayTopologyController.kt：snapshotTopologyBytes / restoreTopologyBytes、
-  setLayout 支持四方向
-- IPadDisplayService.aidl：restoreAll、position 参数化
+- IPadDisplayService.aidl：listLaunchableApps / launchPackageOnDisplay
+- PadDisplayUserService.kt：解析 launcher 组件并 am start --display -n
+- SystemDisplayService.kt：LaunchableApp 数据类与两个方法
+- MainViewModel.kt：toggleAppDrawer / refreshLaunchableApps /
+  launchAppOnExternal / launchAppOnInternal、UiState 两个新字段
+- MainScreen.kt：AppDrawerCard（放在主操作区之后，不进高级选项）
 
 ## 说明
 
-依然没有真机验证。本版重点是让界面能用，不是加新功能。
+依然没有真机验证。

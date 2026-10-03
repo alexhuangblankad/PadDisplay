@@ -741,6 +741,91 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine("不能用 Display.getRealSize()/getMetrics()（会被应用兼容缩放污染）。")
     })
 
+    // ------------------------------------------------------------------
+    // 应用启动器（外接屏的「开始菜单」）
+    // ------------------------------------------------------------------
+
+    /**
+     * 列出所有可启动应用，输出格式：`包名|标签|组件`（每行一条）。
+     *
+     * 为什么需要它：早先启动时**写死了 `com.android.settings/.Settings`**，
+     * 所以外接屏上只能打开「设置」—— 这是我的实现缺陷。
+     * 要开别的应用，必须先拿到它们的 launcher Activity 组件。
+     */
+    override fun listLaunchableApps(): String = clean(buildString {
+        val ctx = injectedContext
+        if (ctx == null) {
+            appendLine("RESULT_OK=false")
+            appendLine("拿不到 Context")
+            return@buildString
+        }
+        val pm = ctx.packageManager
+        val intent = android.content.Intent(android.content.Intent.ACTION_MAIN).apply {
+            addCategory(android.content.Intent.CATEGORY_LAUNCHER)
+        }
+        val resolved = runCatching {
+            @Suppress("DEPRECATION")
+            pm.queryIntentActivities(intent, 0)
+        }.getOrElse { emptyList() }
+
+        val rows = resolved.mapNotNull { ri ->
+            val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+            val cls = ri.activityInfo?.name ?: return@mapNotNull null
+            val label = runCatching { ri.loadLabel(pm).toString() }.getOrDefault(pkg)
+            if (pkg == ctx.packageName) return@mapNotNull null
+            Triple(pkg, label, "$pkg/$cls")
+        }.distinctBy { it.first }
+            .sortedBy { it.second.lowercase() }
+
+        appendLine("RESULT_OK=true")
+        appendLine("共 ${rows.size} 个可启动应用")
+        appendLine()
+        rows.forEach { (pkg, label, comp) -> appendLine("$pkg|$label|$comp") }
+    })
+
+    /**
+     * 把指定包名的主 Activity 启动到目标屏。
+     *
+     * 用 `am start --display N -n <组件>`。
+     * 早先用 `-p <包名>` 对 `am start` 并不可靠（它期望 component），
+     * 所以只有显式给了 `-n` 的「设置」能成功 —— 这就是"只能开设置"的原因。
+     */
+    override fun launchPackageOnDisplay(displayId: Int, packageName: String): String = clean(buildString {
+        appendLine("=== 启动 $packageName 到 displayId=$displayId ===")
+        val ctx = injectedContext
+        if (ctx == null) {
+            appendLine("RESULT_OK=false")
+            appendLine("拿不到 Context，无法解析 launcher 组件")
+            return@buildString
+        }
+        val pm = ctx.packageManager
+        val component = runCatching {
+            @Suppress("DEPRECATION")
+            val i = pm.getLaunchIntentForPackage(packageName)
+            i?.component?.let { "${it.packageName}/${it.className}" }
+        }.getOrNull()
+
+        if (component == null) {
+            appendLine("RESULT_OK=false")
+            appendLine("该包没有可直接启动的 launcher Activity（可能是服务类应用或已被禁用）")
+            return@buildString
+        }
+        appendLine("解析到组件: $component")
+
+        val cmd = "/system/bin/am start --display $displayId -n $component"
+        appendLine("命令: $cmd")
+        appendLine()
+        val out = execRaw(cmd).trim()
+        appendLine(out.ifEmpty { "(空输出)" })
+        val ok = !out.contains("Error") && !out.contains("Exception") &&
+            !out.contains("does not exist") && out.isNotEmpty()
+        appendLine()
+        appendLine("RESULT_OK=$ok")
+        if (!ok) {
+            appendLine("提示：部分 ROM 限制把第三方应用启动到副屏；若报权限/安全错误即属此类。")
+        }
+    })
+
     /**
      * 在外接屏上真实启动一个 Activity（决定性测试）。
      *

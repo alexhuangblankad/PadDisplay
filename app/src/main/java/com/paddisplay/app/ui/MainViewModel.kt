@@ -68,6 +68,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val displayModeDetail: String = "",
         /** 高级选项面板是否展开（默认收起，避免一屏塞满按钮让人不知道该点哪个） */
         val advancedExpanded: Boolean = false,
+        // ---------------- 应用启动器（外接屏的「开始菜单」）----------------
+        val launchableApps: List<SystemDisplayService.LaunchableApp> = emptyList(),
+        val appDrawerExpanded: Boolean = false,
     )
 
     /** 外接屏显示模式（对标 Windows Win+P）。 */
@@ -550,6 +553,57 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 应用启动器（外接屏的「开始菜单」）
+    // ------------------------------------------------------------------
+
+    /** 展开/收起应用列表，并在展开时拉取应用清单。 */
+    fun toggleAppDrawer() {
+        val expand = !_ui.value.appDrawerExpanded
+        _ui.value = _ui.value.copy(appDrawerExpanded = expand)
+        if (expand && _ui.value.launchableApps.isEmpty()) {
+            refreshLaunchableApps()
+        }
+    }
+
+    /** 拉取可启动应用清单。 */
+    fun refreshLaunchableApps() {
+        viewModelScope.launch {
+            val apps = systemService.listLaunchableApps()
+            _ui.value = _ui.value.copy(launchableApps = apps)
+            appendLog("可启动应用：${apps.size} 个")
+        }
+    }
+
+    /** 把某个应用启动到外接屏。 */
+    fun launchAppOnExternal(app: SystemDisplayService.LaunchableApp) {
+        viewModelScope.launch {
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.launchPackageOnDisplay(external.displayId, app.packageName)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("在外屏启动「${app.label}」：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
+    /** 把某个应用启动到内屏。 */
+    fun launchAppOnInternal(app: SystemDisplayService.LaunchableApp) {
+        viewModelScope.launch {
+            val internal = systemService.internalDisplay()
+            if (internal == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 找不到内屏")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.launchPackageOnDisplay(internal.displayId, app.packageName)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("在内屏启动「${app.label}」：${r.toText().replace("\n", " / ")}")
+        }
+    }
     /**
      * 一键完成「我想要的」：外接屏独立显示 + 内屏保持 + 音频留平板 + 外屏开应用。
      */
