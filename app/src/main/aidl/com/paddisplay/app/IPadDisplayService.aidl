@@ -216,6 +216,30 @@ interface IPadDisplayService {
     /** 向目标屏注入一次指针移动。 */
     String injectPointerMove(int displayId, int x, int y);
 
+    // ------------------------------------------------------------------
+    // 桌面模式 / 自由窗口（DeX / TNT 类桌面的机制）
+    //
+    // AOSP 里这两个开发者选项就是"桌面模式"的开关，都是 Global settings：
+    //   DEVELOPMENT_FORCE_DESKTOP_MODE_ON_EXTERNAL_DISPLAYS
+    //   DEVELOPMENT_ENABLE_FREEFORM_WINDOWS_SUPPORT
+    // 后者是"自由窗口管理"（App 可拖动/缩放窗口）—— 脚本项目
+    // fox0001/android-desktop-mode 正是靠它实现桌面形态。
+    // 两者都可以用 shell 身份（WRITE_SECURE_SETTINGS）写入，不需要 root。
+    //
+    // ⚠️ 注意 AOSP 自己在 WMS 里对桌面模式的注释：
+    //   "TODO: Show mouse pointer on external screen."
+    //   也就是说桌面模式本身并不解决"鼠标指针显示在外接屏"，别指望它解决跨屏。
+    // ------------------------------------------------------------------
+
+    /** 探测桌面模式/自由窗口相关设置与能力。 */
+    String probeDesktopMode();
+
+    /**
+     * 开关桌面模式相关设置。
+     * @param enable true = 打开（开发者选项里那两个勾）
+     */
+    String setDesktopMode(boolean enable);
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 

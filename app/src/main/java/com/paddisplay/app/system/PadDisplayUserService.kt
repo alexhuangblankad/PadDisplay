@@ -742,6 +742,121 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     })
 
     // ------------------------------------------------------------------
+    // 桌面模式 / 自由窗口（DeX / TNT 类桌面的机制）
+    // ------------------------------------------------------------------
+
+    /**
+     * 桌面模式相关的 Global settings 键。
+     *
+     * 这些就是开发者选项里的勾选，AOSP WMS 的 `SettingsObserver` 直接监听它们：
+     * - `updateForceDesktopModeOnExternalDisplays()`
+     * - `updateFreeformWindowManagement()`
+     *
+     * 也就是说：**写这两个键就等于帮用户在开发者选项里打勾**，无需 root
+     * （需要 WRITE_SECURE_SETTINGS，shell 持有）。
+     */
+    private val desktopModeKeys = listOf(
+        "development_force_desktop_mode_on_external_displays",
+        "development_enable_freeform_windows_support",
+        "development_force_resizable_activities",
+        "development_enable_non_resizable_multi_window",
+        "development_override_desktop_experience_features",
+    )
+
+    override fun probeDesktopMode(): String = clean(buildString {
+        val ctx = injectedContext
+        val resolver = ctx?.contentResolver
+        appendLine("=== 桌面模式 / 自由窗口 探测 ===")
+        appendLine("uid=${android.os.Process.myUid()}")
+        appendLine()
+
+        appendLine("--- Global settings 当前值 ---")
+        desktopModeKeys.forEach { key ->
+            val v = runCatching {
+                android.provider.Settings.Global.getInt(resolver, key, -1)
+            }.getOrDefault(-999)
+            val label = when (v) {
+                1 -> "已开启"
+                0 -> "已关闭"
+                -1 -> "未设置（键不存在）"
+                else -> "读不到($v)"
+            }
+            appendLine("  $key = $v  ($label)")
+        }
+        appendLine()
+
+        appendLine("--- 系统能力（编译期，不可改）---")
+        val pm = ctx?.packageManager
+        listOf(
+            "android.software.freeform_window_management",
+            "android.software.multi_window",
+            "android.hardware.type.pc",
+        ).forEach { f ->
+            val has = runCatching { pm?.hasSystemFeature(f) }.getOrDefault(false)
+            appendLine("  $f = $has")
+        }
+        appendLine("  config_isDesktopModeSupported = " + runCatching {
+            val res = ctx?.resources ?: return@runCatching null
+            val id = res.getIdentifier("config_isDesktopModeSupported", "bool", "android")
+            if (id != 0) res.getBoolean(id) else null
+        }.getOrNull())
+        appendLine()
+
+        appendLine("--- 参考实现的做法 ---")
+        appendLine("  fox0001/android-desktop-mode 的 README 指出：")
+        appendLine("  开发者选项里勾选「启用可自由调整的窗口」+「强制使用桌面模式」，")
+        appendLine("  即可启用系统内置的桌面模式（App 可自由拖动、调整窗口大小）。")
+        appendLine()
+        appendLine("--- ⚠️ 关于鼠标指针 ---")
+        appendLine("  AOSP WindowManagerService 里对 mForceDesktopModeOnExternalDisplays 的注释：")
+        appendLine("    \"Enable system decorations and IME on external screen.\"")
+        appendLine("    \"TODO: Show mouse pointer on external screen.\"")
+        appendLine("  即：桌面模式本身**并不**解决「鼠标指针显示在外接屏」，")
+        appendLine("  更不解决「指针跨两块屏」—— 后者需要 DisplayTopology（本机被关闭）。")
+    })
+
+    override fun setDesktopMode(enable: Boolean): String = clean(buildString {
+        val ctx = injectedContext
+        val resolver = ctx?.contentResolver
+        if (resolver == null) {
+            appendLine("RESULT_OK=false")
+            appendLine("拿不到 ContentResolver")
+            return@buildString
+        }
+        val want = if (enable) 1 else 0
+        appendLine("=== ${if (enable) "开启" else "关闭"}桌面模式相关设置 ===")
+        appendLine("uid=${android.os.Process.myUid()}")
+        appendLine()
+        var allOk = true
+        desktopModeKeys.forEach { key ->
+            val old = runCatching {
+                android.provider.Settings.Global.getInt(resolver, key, -1)
+            }.getOrDefault(-999)
+            val wrote = runCatching {
+                android.provider.Settings.Global.putInt(resolver, key, want)
+            }.getOrDefault(false)
+            val now = runCatching {
+                android.provider.Settings.Global.getInt(resolver, key, -1)
+            }.getOrDefault(-999)
+            val ok = wrote && now == want
+            if (!ok) allOk = false
+            appendLine("  ${if (ok) "✅" else "❌"} $key: $old -> $now (写入返回 $wrote)")
+        }
+        appendLine()
+        appendLine("RESULT_OK=$allOk")
+        if (allOk) {
+            appendLine()
+            appendLine("已写入。WMS 的 SettingsObserver 会实时响应这两个键，")
+            appendLine("但**桌面形态通常需要重新插拔外接屏或重启**才会完全生效。")
+            appendLine()
+            appendLine("建议顺序：先点「一键还原」清掉旧状态 → 再回来开启 → 重新插拔外接屏。")
+        } else {
+            appendLine()
+            appendLine("部分写入失败，可能是 ColorOS 限制了该键（READ_ONLY 或未定义）。")
+        }
+    })
+
+    // ------------------------------------------------------------------
     // 指针注入（触控板方案）
     // ------------------------------------------------------------------
 

@@ -1,52 +1,62 @@
-docs: 补充 11.5 节 —— 用源码证据解释「鼠标跨屏为什么做不到」
+v0.5.0: 桌面模式（DeX / TNT 思路）—— 找到能真正打开它的开关
 
-## 把这个问题查到底了
+## 用户思路是对的，之前漏了它
 
-用户反复追问「为什么做不到」，这次给出基于 AOSP 源码的确定答案，
-并写进 README 永久记录，避免后续再走弯路。
+参考项目 fox0001/android-desktop-mode 的 README 点明关键：
+从 Android 10 起系统内置「桌面模式」，该模式下 App 可自由拖动位置、调整窗口大小。
+开发者选项里勾选「启用可自由调整的窗口」+「强制使用桌面模式」即可启用。
 
-### 这个功能在 Android 里存在，且官方描述就是「光标跨屏」
+## 关键发现：那两个勾就是 Global settings，Shizuku 能直接写
 
-AOSP frameworks/base/services/core/java/com/android/server/display/feature/display_flags.aconfig
-（android-16.0.0_r1）原文：
+AOSP WindowManagerService 里：
+  Settings.Global.DEVELOPMENT_FORCE_DESKTOP_MODE_ON_EXTERNAL_DISPLAYS
+  Settings.Global.DEVELOPMENT_ENABLE_FREEFORM_WINDOWS_SUPPORT
+  Settings.Global.DEVELOPMENT_FORCE_RESIZABLE_ACTIVITIES
 
-    flag {
-        name: "display_topology"
-        namespace: "display_manager"
-        description: "Display topology for moving cursors and windows between extended displays"
-        bug: "364906028"
-        is_fixed_read_only: true
-    }
+WMS 的 SettingsObserver 实时监听：
+  mForceDesktopModeOnExternalDisplaysUri -> updateForceDesktopModeOnExternalDisplays()
+  mFreeformWindowUri -> updateFreeformWindowManagement()
+后者会把 mAtmService.mSupportsFreeformWindowManagement 设为 true。
 
-description 明确写着「在扩展显示器之间移动光标和窗口」—— 正是需求本身。
+写这两个键 = 帮用户在开发者选项里打勾，不需要 root（WRITE_SECURE_SETTINGS，shell 持有）。
 
-它在系统服务里驱动输入的方式（DisplayManagerService）：
+## 修正我之前的一个武断判断
 
-    if (mFlags.isDisplayTopologyEnabled()) {
-        DisplayTopologyGraph graph = update.second;
-        mInputManagerInternal.setDisplayTopology(graph);   // 喂给输入系统
-    }
+此前探测 development_force_desktop_mode_on_external_displays 得到 -999（键不存在），
+我判断为"本机没有这个设置"。实际上：
+  Settings.Global.getInt(resolver, key, 0)   // 默认 0，键不存在也返回 0
+键不存在只说明该开关从没被碰过，不代表不能设置。写入后就会存在。
 
-没有这个 flag，输入系统里就不存在统一的多屏坐标空间，光标不可能跨屏。
+## 本版新增「桌面模式」卡片（主界面）
 
-### 为什么 App 改不动
+- 探测桌面模式能力：列出 5 个 Global settings 当前值、系统 feature 能力、参考实现做法
+- 开启/关闭桌面模式：写入并读回验证
+- 提示写入后通常需重新插拔外接屏或重启才完全生效
 
-is_fixed_read_only: true 的含义（AOSP 官方文档）：
-「只读 aconfig 标志是布尔常量，无法在运行时更改。」
+## 关于鼠标的诚实说明
 
-配套版本配置里权限为 READ_ONLY。只读标志的值在编译系统镜像时定死，
-aflags / device_config 这类运行时开关对它无效（只能改"读写"标志）。
+AOSP WindowManagerService 中该字段注释原文：
+  - Enable system decorations and IME on external screen.
+  - TODO: Show mouse pointer on external screen.
+即 Android 官方在桌面模式里都还没做「在外接屏显示鼠标指针」。
 
-### 结论表
+因此：
+- 外接屏成为真正的桌面（自由窗口、可拖动缩放）：能，这正是其用途
+- 外接屏有系统装饰与输入法：能
+- 鼠标指针显示在外接屏：AOSP 自己仍是 TODO
+- 鼠标跨两块屏：需要 DisplayTopology，本机被关闭
 
-- App / Shizuku 调 API：不可行（服务端 coordinator 为 null，静默空操作）
-- aflags enable / device_config put：不可行（只读标志）
-- 改系统镜像后重刷（root / 第三方 ROM）：唯一真正可行的办法
-- 等厂商后续版本打开该 flag：只能等
+不会宣称"开了桌面模式鼠标就能跨屏"。
 
-即：不是实现难度问题，是厂商在编译时关掉了它。
+## 新增/修改文件
 
-### 替代方案
+- IPadDisplayService.aidl：probeDesktopMode / setDesktopMode
+- PadDisplayUserService.kt：5 个 Global settings 的读写与读回验证
+- SystemDisplayService.kt / MainViewModel.kt：对应封装
+- MainScreen.kt：DesktopModeCard（放在主界面）
 
-不开 root 的前提下：触控板方案（外接屏自绘光标 + 注入指针事件），
-见 README 6.9 节与 v0.4.1 实现。
+## 说明
+
+依然没有真机验证。本版依据 AOSP 源码与参考项目 README 实现。
+若开启后桌面形态未出现，需看探测输出判断是哪一层挡住：
+键写入失败（ROM 限制），或 config_isDesktopModeSupported=false 导致自由窗口未真正打开。

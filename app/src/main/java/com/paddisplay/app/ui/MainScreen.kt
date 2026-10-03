@@ -95,6 +95,9 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
             // ============================================================
             // 以下全部收进「高级选项」，默认收起
             // ============================================================
+            // 桌面模式（DeX / TNT 类桌面）：这是"要一个真正的桌面"的正解
+            item { DesktopModeCard(vm = vm, ui = ui) }
+
             // 触控板：解决「鼠标不能跨屏」的实际替代方案
             item { TouchpadEntryCard(ui = ui) }
 
@@ -216,6 +219,78 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
             onCopy = { vm.copyDiagnostics(context) },
             onClose = { vm.closeDiagnostics() },
         )
+    }
+}
+
+/**
+/**
+ * 触控板入口 —— 「鼠标不能跨屏」的实际替代方案。
+ *
+ * 鼠标自由跨屏依赖 DisplayTopology，而本机该 feature flag 被 ROM 关闭，
+ * 非 root 打不开。所以改为：用平板当外接屏的触控板（自绘光标 + 注入指针）。
+ */
+ * 桌面模式（DeX / TNT 类桌面）—— 「想要一个真正的桌面」的正解。
+ *
+ * 依据：脚本项目 fox0001/android-desktop-mode 的 README 指出，
+ * 开发者选项里勾选「启用可自由调整的窗口」+「强制使用桌面模式」，
+ * 即可启用系统内置的桌面模式（App 可自由拖动、调整窗口大小）。
+ *
+ * 而这两个勾就是两个 Global settings；AOSP WMS 的 SettingsObserver 直接监听它们，
+ * 用 shell 身份（WRITE_SECURE_SETTINGS）写入即可，不需要 root。
+ *
+ * 注意：AOSP 自己在 WMS 里对桌面模式的注释是
+ *   "TODO: Show mouse pointer on external screen."
+ * 即桌面模式并不解决「鼠标指针显示在外接屏」，更不解决「指针跨两块屏」。
+ */
+@Composable
+private fun DesktopModeCard(vm: MainViewModel, ui: MainViewModel.UiState) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.25f),
+        ),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                "桌面模式（DeX / 锤子 TNT 类桌面）",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Android 10 起系统内置「桌面模式」：App 可自由拖动位置、调整窗口大小，跟 PC 一样。" +
+                    "它的开关就是开发者选项里那两个勾，对应两个 Global 设置 —— " +
+                    "用 Shizuku 的 shell 身份可以直接写，不需要 root。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "写入后通常需要重新插拔外接屏或重启才会完全生效。" +
+                    "注意：AOSP 自己在代码里仍留着「TODO: 在外接屏显示鼠标指针」，" +
+                    "所以桌面模式不解决鼠标跨屏问题。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.tertiary,
+            )
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.enableDesktopMode() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("开启桌面模式") }
+                OutlinedButton(
+                    onClick = { vm.disableDesktopMode() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("关闭") }
+            }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { vm.probeDesktopMode() },
+                enabled = ui.shizuku.canControl && !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("探测桌面模式能力（先看这个）") }
+        }
     }
 }
 

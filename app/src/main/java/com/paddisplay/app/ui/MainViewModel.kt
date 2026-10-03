@@ -604,6 +604,43 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             appendLog("在内屏启动「${app.label}」：${r.toText().replace("\n", " / ")}")
         }
     }
+    // ------------------------------------------------------------------
+    // 桌面模式 / 自由窗口（DeX / TNT 类桌面）
+    // ------------------------------------------------------------------
+
+    /** 探测桌面模式能力与当前设置。 */
+    fun probeDesktopMode() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val text = systemService.probeDesktopMode()
+            _ui.value = _ui.value.copy(
+                busy = false,
+                diagnostics = "=========== 桌面模式探测 ===========\n\n$text",
+                showDiagnostics = true,
+            )
+            appendLog("已探测桌面模式")
+        }
+    }
+
+    /** 开启桌面模式（等于在开发者选项里打勾那两个开关）。 */
+    fun enableDesktopMode() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.setDesktopMode(enable = true)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("开启桌面模式：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
+    /** 关闭桌面模式。 */
+    fun disableDesktopMode() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.setDesktopMode(enable = false)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("关闭桌面模式：${r.toText().replace("\n", " / ")}")
+        }
+    }
     /**
      * 一键完成「我想要的」：外接屏独立显示 + 内屏保持 + 音频留平板 + 外屏开应用。
      */

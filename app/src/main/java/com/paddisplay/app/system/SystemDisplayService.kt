@@ -650,6 +650,37 @@ class SystemDisplayService(
             }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
         }
     // ------------------------------------------------------------------
+    // 桌面模式 / 自由窗口
+    // ------------------------------------------------------------------
+
+    /** 探测桌面模式/自由窗口相关设置与能力。 */
+    suspend fun probeDesktopMode(): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.probeDesktopMode() }.getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /**
+     * 开关桌面模式（等于帮用户在开发者选项里打勾那两个开关）。
+     *
+     * 对应 Global settings：
+     * `development_force_desktop_mode_on_external_displays`
+     * `development_enable_freeform_windows_support`
+     */
+    suspend fun setDesktopMode(enable: Boolean): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+        runCatching {
+            val out = svc.setDesktopMode(enable)
+            val ok = out.contains("RESULT_OK=true")
+            OpResult(
+                ok,
+                if (ok) (if (enable) "已开启桌面模式" else "已关闭桌面模式") else "写入失败（可能被 ROM 限制）",
+                out.lines().filter { it.isNotBlank() },
+            )
+        }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+    // ------------------------------------------------------------------
     // 一键操作
     // ------------------------------------------------------------------
 
