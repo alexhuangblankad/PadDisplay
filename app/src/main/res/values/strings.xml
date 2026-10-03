@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">PadDisplay</string>
+    <string name="desktop_shortcut_description">仅在主机模式处理 F9，唤出外屏底部导航。Fn+F9 需键盘上报 F9。其它按键（含左 Alt）原样放行；不读取窗口内容，不处理鼠标或模拟手势。</string>
 </resources>

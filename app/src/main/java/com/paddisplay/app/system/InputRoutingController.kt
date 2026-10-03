@@ -37,6 +37,7 @@ class InputRoutingController(
     private val inputManagerBinder: IBinder?,
     private val shellRunner: (String) -> String,
 ) {
+    private val touchedDevices = mutableMapOf<String, InputDeviceInfo>()
 
     companion object {
         const val DESCRIPTOR_INPUT_MANAGER = "android.hardware.input.IInputManager"
@@ -54,9 +55,7 @@ class InputRoutingController(
         }
 
         /**
-         * 外接输入设备：有 Location 且不是虚拟设备。
-         *
-         * ⚠️ `InputDevice.getLocation()` 是**隐藏方法**，必须反射。
+         * Location 只用于端口回退；不能用于判定设备是否外接。
          */
         fun locationOf(device: InputDevice): String =
             runCatching {
@@ -64,9 +63,7 @@ class InputRoutingController(
             }.getOrNull() ?: ""
 
         fun isExternalInputDevice(device: InputDevice): Boolean {
-            val location = locationOf(device)
-            if (location.isBlank()) return false
-            return !runCatching { device.isVirtual }.getOrDefault(false)
+            return device.id >= 0 && device.isExternal && !device.isVirtual
         }
     }
 
@@ -111,9 +108,9 @@ class InputRoutingController(
      * 于是永远报"没有找到可绑定的外接输入设备"。
      */
     fun listInputDevices(): List<InputDeviceInfo> =
-        InputDevice.getDeviceIds().toList().mapNotNull { id ->
+        freshDeviceIds().toList().mapNotNull { id ->
             if (id < 0) return@mapNotNull null
-            val dev = runCatching { InputDevice.getDevice(id) }.getOrNull() ?: return@mapNotNull null
+            val dev = freshDevice(id) ?: return@mapNotNull null
             val sources = runCatching { dev.sources }.getOrDefault(0)
             val isMouse = (sources and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE
             val isKeyboard = runCatching {
@@ -132,9 +129,38 @@ class InputRoutingController(
             )
         }
 
+    // Direct Binder reads avoid InputManagerGlobal's asynchronous device-change cache.
+    // In a shell UserService there may be no functioning cache listener/Looper.
+    private fun freshDeviceIds(): IntArray = AidlCodec.call(
+        inputManagerBinder, DESCRIPTOR_INPUT_MANAGER, "getInputDeviceIds",
+        Codes.GET_INPUT_DEVICE_IDS, {}, { it.createIntArray() ?: intArrayOf() },
+    ).getOrThrow()
+
+    private fun freshDevice(id: Int): InputDevice? = AidlCodec.call(
+        inputManagerBinder, DESCRIPTOR_INPUT_MANAGER, "getInputDevice",
+        Codes.GET_INPUT_DEVICE, { it.writeInt(id) },
+        { it.readTypedObject(InputDevice.CREATOR) },
+    ).getOrThrow()
+
+    private fun awaitAssociation(descriptor: String, displayId: Int): Boolean {
+        val deadline = android.os.SystemClock.uptimeMillis() + 1500
+        do {
+            if (listInputDevices().any {
+                    it.descriptor == descriptor && it.associatedDisplayId == displayId
+                }) return true
+            android.os.SystemClock.sleep(100)
+        } while (android.os.SystemClock.uptimeMillis() < deadline)
+        return false
+    }
+
     /** `InputDevice.getAssociatedDisplayId()` 是隐藏 API，用反射读（读回验证用）。 */
     private fun associatedDisplayIdOf(device: InputDevice): Int? = runCatching {
-        Reflect.findMethod(device.javaClass, "getAssociatedDisplayId")?.invoke(device) as? Int
+        val method = Reflect.findMethod(device.javaClass, "getAssociatedDisplayId")
+            ?: throw NoSuchMethodException("InputDevice.getAssociatedDisplayId")
+        method.invoke(device) as Int
+    }.onFailure {
+        val message = "getAssociatedDisplayId id=${device.id}: ${Reflect.describe(it)}"
+        if (AidlCodec.callLog.lastOrNull() != message) AidlCodec.callLog.add(message)
     }.getOrNull()
 
     /**
@@ -271,7 +297,7 @@ class InputRoutingController(
      */
     private fun eligibleDevices(mouse: Boolean, keyboard: Boolean): List<InputDeviceInfo> =
         listInputDevices().filter { d ->
-            d.isExternal && d.descriptor.isNotBlank() &&
+            d.isExternal && !d.isVirtual && d.descriptor.isNotBlank() &&
                 ((mouse && d.isMouse) || (keyboard && d.isKeyboard))
         }
 
@@ -283,6 +309,7 @@ class InputRoutingController(
      *   **默认 false**：Android 的设备关联是静态的，把键盘绑到外屏后它就只往外屏送键事件；
      *   而键事件本身走**焦点窗口**，不绑反而能让两块屏按焦点各自接收键盘输入。
      */
+    @Synchronized
     fun bindAllExternalInputToDisplay(
         display: Display,
         includeMouse: Boolean = true,
@@ -320,23 +347,39 @@ class InputRoutingController(
             return reports
         }
         reports += Report(true, "可绑定设备", devices.joinToString { "${it.name}(${it.purpose})" })
+        if (devices.any { it.isKeyboard }) {
+            reports += Report(true, "复合设备提示", "存在同一 InputDevice 同时含鼠标和键盘的设备；关联作用于整个设备，不能承诺键盘部分不受影响。")
+        }
 
         val portMap = descriptorToPortMap()
 
         devices.forEach { dev ->
-            val inputPort = portMap[dev.descriptor] ?: dev.location
+            val inputPort = portMap[dev.descriptor]?.takeIf { it.isNotBlank() } ?: dev.location
+            touchedDevices[dev.descriptor] = dev.copy(location = inputPort)
             var bound = false
 
             // 级别 1：按描述符关联 uniqueId（Dextop 的做法，最可靠）
             if (!uniqueId.isNullOrEmpty()) {
                 val r1 = addUniqueIdByDescriptor(dev.descriptor, uniqueId)
                 reports += r1
-                bound = r1.ok
+                bound = r1.ok && awaitAssociation(dev.descriptor, display.displayId)
+                if (r1.ok && !bound) {
+                    val cleanup = removeUniqueIdByDescriptor(dev.descriptor)
+                    reports += cleanup
+                    if (!cleanup.ok) return@forEach
+                    reports += Report(false, "描述符关联未生效", "${dev.name}：读回不匹配，撤销后尝试端口关联")
+                }
                 // 级别 2：按端口关联 uniqueId
                 if (!bound && inputPort.isNotBlank()) {
                     val r2 = addUniqueIdByPort(inputPort, uniqueId)
                     reports += r2
-                    bound = r2.ok
+                    bound = r2.ok && awaitAssociation(dev.descriptor, display.displayId)
+                    if (r2.ok && !bound) {
+                        val cleanup = removePortMapping(inputPort, uniqueId = true)
+                        reports += cleanup
+                        if (!cleanup.ok) return@forEach
+                        reports += Report(false, "端口 uniqueId 关联未生效", "${dev.name}：读回不匹配，撤销后尝试物理端口")
+                    }
                 }
             }
 
@@ -344,7 +387,8 @@ class InputRoutingController(
             if (!bound && displayPort != null && inputPort.isNotBlank()) {
                 val r3 = addPortAssociation(inputPort, displayPort)
                 reports += r3
-                bound = r3.ok
+                bound = r3.ok && awaitAssociation(dev.descriptor, display.displayId)
+                if (r3.ok && !bound) reports += removePortMapping(inputPort, uniqueId = false)
             }
 
             if (!bound) {
@@ -353,32 +397,46 @@ class InputRoutingController(
         }
 
         // ---- 读回验证：用 getAssociatedDisplayId() 确认真的关联上了 ----
-        val after = listInputDevices().filter { d -> devices.any { it.id == d.id } }
+        val after = listInputDevices().filter { d -> devices.any { it.descriptor == d.descriptor } }
         val associated = after.filter { it.associatedDisplayId == display.displayId }
-        reports += if (associated.isNotEmpty()) {
+        reports += if (devices.all { original -> associated.any { it.descriptor == original.descriptor } }) {
             Report(true, "读回验证", "已关联到 displayId=${display.displayId}：" + associated.joinToString { it.name })
         } else {
             Report(
                 false,
                 "读回验证",
-                "写入返回成功，但 getAssociatedDisplayId() 读回未显示关联到 displayId=${display.displayId}" +
+                "未获全部鼠标关联到 displayId=${display.displayId} 的读回确认" +
                     "（实际：" + after.joinToString { "${it.name}=${it.associatedDisplayId ?: "-"}" } + "）",
             )
         }
         return reports
     }
 
+    private fun removePortMapping(inputPort: String, uniqueId: Boolean): Report {
+        val label = if (uniqueId) "removeUniqueIdAssociationByPort" else "removePortAssociation"
+        return AidlCodec.callVoid(
+            inputManagerBinder, DESCRIPTOR_INPUT_MANAGER, label,
+            if (uniqueId) Codes.REMOVE_UNIQUE_ID_BY_PORT else Codes.REMOVE_PORT_ASSOCIATION,
+            { it.writeString(inputPort) },
+        ).fold(
+            { Report(true, label, inputPort) },
+            { Report(false, label, Reflect.describe(it)) },
+        )
+    }
+
     /** 解除所有输入设备的关联，恢复默认（输入跟随默认屏）。 */
-    fun clearAllAssociations(): List<Report> {
+    @Synchronized
+    fun clearAllAssociations(ownedOnly: Boolean = false): List<Report> {
         val reports = mutableListOf<Report>()
         if (inputManagerBinder == null) {
             return listOf(Report(false, "IInputManager", "取不到 input 系统服务"))
         }
-        val devices = listInputDevices()
+        val devices = (touchedDevices.values + if (ownedOnly) emptyList() else eligibleDevices(mouse = true, keyboard = false))
+            .distinctBy { it.descriptor }
         val portMap = descriptorToPortMap()
         devices.forEach { dev ->
             reports += removeUniqueIdByDescriptor(dev.descriptor)
-            val inputPort = portMap[dev.descriptor] ?: dev.location
+            val inputPort = portMap[dev.descriptor]?.takeIf { it.isNotBlank() } ?: dev.location
             if (inputPort.isNotBlank()) {
                 AidlCodec.callVoid(
                     binder = inputManagerBinder,
@@ -386,7 +444,9 @@ class InputRoutingController(
                     label = "removeUniqueIdAssociationByPort",
                     code = Codes.REMOVE_UNIQUE_ID_BY_PORT,
                     writeArgs = { it.writeString(inputPort) },
-                ).onSuccess {
+                ).onFailure {
+                    reports += Report(false, "removeUniqueIdAssociationByPort", Reflect.describe(it))
+                }.onSuccess {
                     reports += Report(true, "removeUniqueIdAssociationByPort", inputPort)
                 }
                 AidlCodec.callVoid(
@@ -395,11 +455,16 @@ class InputRoutingController(
                     label = "removePortAssociation",
                     code = Codes.REMOVE_PORT_ASSOCIATION,
                     writeArgs = { it.writeString(inputPort) },
-                ).onSuccess {
+                ).onFailure {
+                    reports += Report(false, "removePortAssociation", Reflect.describe(it))
+                }.onSuccess {
                     reports += Report(true, "removePortAssociation", inputPort)
                 }
             }
         }
+        val restored = devices.all { original -> awaitAssociation(original.descriptor, Display.INVALID_DISPLAY) }
+        reports += Report(restored, "读回验证", if (restored) "鼠标已恢复为未关联状态" else "鼠标关联解除未获全部读回确认")
+        if (reports.all { it.ok }) touchedDevices.clear()
         return reports
     }
 
@@ -420,11 +485,16 @@ class InputRoutingController(
             list.forEach { d ->
                 appendLine(
                     "  id=${d.id} name=${d.name} external=${d.isExternal} virtual=${d.isVirtual} " +
-                        "location=${d.location}",
+                        "mouse=${d.isMouse} keyboard=${d.isKeyboard} descriptor=${d.descriptor} " +
+                        "associatedDisplayId=${d.associatedDisplayId ?: "不可读取"} location=${d.location}",
                 )
             }
         }
         appendLine()
         appendLine("描述符->端口 映射数: ${descriptorToPortMap().size}")
+        synchronized(AidlCodec.callLog) {
+            AidlCodec.callLog.filter { it.startsWith("getAssociatedDisplayId id=") }
+                .distinct().forEach { appendLine(it) }
+        }
     }
 }

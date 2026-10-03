@@ -1,42 +1,9 @@
-docs: 新增完整交接文档 HANDOFF.md
+feat: 发布 v1.0.0 物理外屏桌面与全屏导航
 
-## 目的
+加入独立桌面、内置和悬浮 Dock、导航、真实任务窗口控制与控制中心。
+F9 全屏导航使用可选辅助快捷键服务；其它键含左 Alt 放行，不处理鼠标。
+保留显示、DPI、音频与内屏电源；退出撤除前端并尝试回迁应用、恢复策略与鼠标。
+补充中文 README、桌面预览、验证说明和发布说明。
 
-用户要求把所有调研与实现总结成交接文档，交由其他 agent 判断
-"在 Shizuku（shell 权限）之下能否用软件层实现原生鼠标跨屏"。
-
-## 文档内容
-
-docs/HANDOFF.md 覆盖：
-- 一句话现状 + 项目基本信息（版本 v0.6.1、构建/发布流程、交付约定）
-- 用户设备实测参数（OPPO Pad Mini / SD 8 Gen 5 / Android 16 / 2520x1680 + 4K@60）
-- 技术机制全貌，分三段明确区分能/不能/未验证：
-  1. 输入设备关联（addUniqueIdAssociation*）：仅检查
-     ASSOCIATE_INPUT_DEVICE_TO_DISPLAY（signature），而 shell 已被授予该权限
-     （frameworks/base/packages/Shell/AndroidManifest.xml 原文）→ 权限足够，
-     事务码 2/3/40-45 已用真实 aidl.exe 验证全部正确
-  2. 指针连续跨屏：需要 display_topology，read-only aconfig flag，
-     is_fixed_read_only: true，运行时不可改；flag 为 false 时整段代码路径
-     不存在于编译产物中 → shell 权限再高也无法调用未编译进来的代码
-  3. setPointerDisplayId：非 Binder，外部调不到；但系统在
-     mForceDesktopModeOnExternalDisplays 为真时会自己调
-- 行业权威旁证：SmartDock DFC 的 INPUT_ROUTING_A14.md（指针模式表 +
-  四条路径门槛），以及其商业版"必须编译进系统"的事实
-- 未验证的最大机会：输入设备关联曾因代码 bug 失败（getLocation 判定），
-  修复后从未重测；给出完整实测步骤与判据
-- 已排除方案清单（settings put global / 自绘光标 / 启动器 / 虚拟显示器 / 打包第三方 APK）
-- 给用户的结论路线（配鼠标 / 解 BL+root+LSPosed / 换三星）
-- 死过的坑：事务码两次 off-by-one、假成功与哨兵值、异常被吞、
-  PowerShell 编码事故、注释块操作事故、空字符串抛异常
-- 参考项目清单、代码结构、证据文件位置
-
-## 核心未解问题（列给接手者）
-
-在 display_topology 为 false 的 ROM 上，输入系统里如何建立两块屏之间的
-连续坐标空间？若无解，则"鼠标滑过去"不可能实现，能实现的只有
-"把鼠标放到外接屏"（PHYSICAL_HARDWARE 模式，需实测）。
-
-## 其他
-
-- README 新增 11.4 节指向交接文档与两份调研文档
-- 已核对文档中引用的全部文件路径均存在
+验证：release 构建和签名、模拟器安装与亮暗布局、导航面板预览、实际音量调整、F9/Alt 规则、窗口布局和 DPI 异常检查。
+新增 ColorOS 窗口、退出与全屏串流策略尚未完成真机验证。

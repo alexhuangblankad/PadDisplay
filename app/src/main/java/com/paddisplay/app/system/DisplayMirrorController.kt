@@ -4,47 +4,9 @@ import android.os.Build
 import android.os.IBinder
 
 /**
- * 外接屏显示模式控制：**扩展 / 复制 / 仅外接屏**（对标 Windows 的 Win+P）。
- *
- * ## 为什么不能用「镜像 API」
- *
- * AOSP 早期版本有 `IWindowManager.setDisplayIdToMirror(int displayId)`，
- * 但**它在 Android 14 就被移除了** —— 本项目从 AOSP 各 tag 解析 `IWindowManager.aidl`
- * 后确认 34/35/36 三个版本里都不存在这个方法。
- *
- * ## 那怎么切换「扩展 / 复制」
- *
- * AOSP 的 `DisplayContent.shouldBeMirrored()` 规则很明确：
- *
- * ```
- * shouldBeMirrored()
- *   = !mDisplayWindowSettings.shouldBeEnabled(...)
- *     || (shouldForceDesktopMode() && windowingMode == WINDOWING_MODE_FULLSCREEN)
- * ```
- *
- * 而 `DisplayWindowSettings.shouldForceDesktopMode()` 是：
- *
- * ```
- * return mDisplayId != DEFAULT_DISPLAY && mWindowManagerService.mContext.getResources()
- *         .getBoolean(com.android.internal.R.bool.config_isDesktopModeSupported)
- *     && Settings.Global.getInt(cr, DEVELOPMENT_FORCE_DESKTOP_MODE, 0) == 1
- * ```
- *
- * 也就是说：**只要不是桌面模式设备（`config_isDesktopModeSupported == false`），
- * 外接屏就不会被强制镜像 —— 而是各自独立显示（= 扩展）。**
- *
- * 所以本项目的做法是：
- * - **扩展**：把外接屏的 windowingMode 设为 `FULLSCREEN(1)`，并确保它没有被 disable。
- * - **复制**：向用户说明这是系统/厂商行为（多数手机平板默认就是复制），
- *   本应用不提供强制镜像（AOSP 已移除该 API，硬做会动到 display 的 enable 状态，
- *   风险太高且容易变砖式黑屏）。
- * - 所有模式切换后都**读回 `getWindowingMode` 验证**，并把真实状态显示出来，
- *   绝不像上一版那样「报成功其实什么都没做」。
- *
- * ## 重要安全约束
- *
- * 只写 **displayId 对应那一个 display** 的 windowingMode。
- * 绝不调用不带 displayId 的全局设置，也绝不改动内屏的 windowingMode。
+ * Per-display window policy. A windowing mode is not proof of the physical mirror source.
+ * Fullscreen mode can contain independent app content or a system mirrored surface.
+ * The desktop session owns its content and restores the previous policy on exit.
  */
 class DisplayMirrorController(
     private val windowManagerBinder: IBinder?,
@@ -171,7 +133,7 @@ class DisplayMirrorController(
         if (before == WINDOWING_MODE_FULLSCREEN) {
             return ExtendResult(
                 ok = true,
-                report = Report(true, "扩展模式", "外接屏已经是独立的 FULLSCREEN 屏幕，无需修改"),
+                report = Report(true, "扩展模式", "外接屏已经采用 FULLSCREEN 窗口策略，无需修改；不能据此判断复制或扩展"),
                 info = info,
             )
         }

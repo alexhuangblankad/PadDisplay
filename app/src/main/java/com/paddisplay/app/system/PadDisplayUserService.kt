@@ -58,9 +58,141 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         ServiceContextHolder.context = injectedContext
     }
 
+    private val desktopTasksController by lazy { DesktopTaskController(injectedContext, ::execRaw) }
+    private var desktopLifetime: IBinder? = null
+    private var desktopDeath: IBinder.DeathRecipient? = null
+    private var desktopDisplayId = -1
+    private var desktopDisplayUniqueId: String? = null
+    private var desktopOriginalDensity = -1
+    private var desktopOriginalWindowMode: Int? = null
+
+    /** Real panel brightness, independent of the external monitor's hardware backlight. */
+    override fun internalBrightness(value: Float): String = runCatching {
+        require(value == -1f || value.isFinite() && value in 0f..1f)
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: error("无 DisplayManager")
+        val internal = dm.displays.firstOrNull { Reflect.findMethod(it.javaClass, "getType")?.invoke(it) == 1 } ?: error("无内屏")
+        val get = Reflect.findMethod(dm.javaClass, "getBrightness", Int::class.javaPrimitiveType) ?: error("系统不支持亮度读取")
+        if (value >= 0f) {
+            val set = Reflect.findMethod(dm.javaClass, "setBrightness", Int::class.javaPrimitiveType, Float::class.javaPrimitiveType) ?: error("系统不支持亮度控制")
+            set.invoke(dm, internal.displayId, value)
+        }
+        val actual = get.invoke(dm, internal.displayId) as? Float ?: error("亮度读回失败")
+        check(actual.isFinite() && actual in 0f..1f) { "亮度不可用" }
+        if (value >= 0f) check(kotlin.math.abs(actual-value) < .04f) { "系统亮度读回与请求不一致（自动亮度或 ROM 限制）" }
+        org.json.JSONObject().put("ok",true).put("value",actual.toDouble()).toString()
+    }.getOrElse { org.json.JSONObject().put("ok",false).put("error",Reflect.describe(it)).toString() }
+
+    private fun restoreDesktopAfterDeath(): String = runCatching {
+            val messages = mutableListOf<String>()
+            var ok = true
+            if (desktopOriginalWindowMode != null && desktopDisplayId > 0) {
+                val restored = restoreDesktopDisplay(desktopDisplayId)
+                messages += restored
+                if (!restored.startsWith("RESULT_OK=true")) ok = false
+            }
+            val mouse = returnMouseToInternal()
+            if (!mouse.contains("RESULT_OK=true")) ok = false
+            messages += mouse
+            val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+            val d = dm?.getDisplay(desktopDisplayId)
+            if (d != null && desktopOriginalDensity != -2 && desktopDisplayUniqueId != null && inputController.displayIdentity(d).first == desktopDisplayUniqueId) {
+                runCatching {
+                    kotlinx.coroutines.runBlocking {
+                        DisplayDensityController { execRaw(it) }.write(desktopDisplayId, desktopOriginalDensity.takeIf { it >= 0 })
+                    }
+                    messages += "原外屏 DPI 已读回恢复"
+                }.onFailure { ok = false; messages += "DPI 恢复失败：${Reflect.describe(it)}" }
+            } else if (desktopDisplayId > 0) {
+                messages += "原外屏不存在、身份变化或 DPI 快照不可用，未写入其它显示器"
+            }
+            "RESULT_OK=$ok\n" + messages.joinToString("\n")
+        }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
+
+    override fun desktopTasks(displayId: Int) = desktopTasksController.list(displayId)
+    override fun launchDesktopApp(displayId: Int, component: String, freeform: Boolean) =
+        desktopTasksController.launch(displayId, component, freeform)
+    override fun desktopTaskAction(displayId: Int, taskId: Int, action: String) =
+        desktopTasksController.action(displayId, taskId, action)
+    override fun resizeDesktopTask(displayId: Int, taskId: Int, left: Int, top: Int, right: Int, bottom: Int) =
+        desktopTasksController.resize(displayId, taskId, left, top, right, bottom)
+
+    @Synchronized
+    override fun prepareDesktopDisplay(displayId: Int): String = runCatching {
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: error("无 DisplayManager")
+        val d = dm.getDisplay(displayId) ?: error("外屏已断开")
+        require(displayId > 0 && Reflect.findMethod(d.javaClass, "getType")?.invoke(d) == 2)
+        if (desktopOriginalWindowMode == null) desktopOriginalWindowMode = mirrorController.getWindowingMode(displayId)
+        val report = mirrorController.setWindowingMode(displayId, 5)
+        "RESULT_OK=${report.ok}\n${report.toText()}"
+    }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
+
+    @Synchronized
+    override fun restoreDesktopDisplay(displayId: Int): String = runCatching {
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: error("无 DisplayManager")
+        val d = dm.getDisplay(displayId) ?: error("外屏已断开")
+        require(displayId > 0 && Reflect.findMethod(d.javaClass, "getType")?.invoke(d) == 2)
+        check(displayId == desktopDisplayId && inputController.displayIdentity(d).first == desktopDisplayUniqueId) { "原外屏身份不匹配，未修改其它屏幕" }
+        val tasks = desktopTasksController.returnTasksToInternal(displayId)
+        val mode = mirrorController.setWindowingMode(displayId, desktopOriginalWindowMode ?: 0)
+        if (mode.ok) desktopOriginalWindowMode = null
+        "RESULT_OK=${tasks.startsWith("RESULT_OK=true") && mode.ok}\n$tasks\n${mode.toText()}\n已恢复系统显示策略，复制画面以显示器实际输出为准。"
+    }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
+
+    @Synchronized
+    override fun registerDesktopSession(token: IBinder, displayId: Int, originalDensity: Int): String = runCatching {
+        require(displayId > 0 && (originalDensity in -2..-1 || originalDensity in 72..1280))
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: error("无 DisplayManager")
+        val d = dm.getDisplay(displayId) ?: error("外屏已断开")
+        check(Reflect.findMethod(d.javaClass, "getType")?.invoke(d) == 2) { "会话目标不是物理外屏" }
+        desktopDeath?.let { desktopLifetime?.unlinkToDeath(it, 0) }
+        desktopLifetime = null
+        val death = IBinder.DeathRecipient {
+            synchronized(this) {
+                if (desktopLifetime == token) {
+                    desktopLifetime = null
+                    android.util.Log.i("PadDisplay/Desktop", "进程退出恢复：${restoreDesktopAfterDeath()}")
+                    desktopDisplayId = -1
+                }
+            }
+        }
+        token.linkToDeath(death, 0)
+        desktopDeath = death
+        desktopDisplayId = displayId
+        desktopDisplayUniqueId = inputController.displayIdentity(d).first
+        desktopOriginalDensity = originalDensity
+        desktopLifetime = token
+        "RESULT_OK=true\n桌面会话已注册" + if (originalDensity == -2) "；DPI 快照不可读取" else ""
+    }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
+
+    @Synchronized
+    override fun releaseDesktopSession(token: IBinder): String {
+        if (desktopLifetime != null && desktopLifetime != token) return "RESULT_OK=false\n会话身份不匹配"
+        desktopDeath?.let { desktopLifetime?.unlinkToDeath(it, 0) }
+        desktopLifetime = null
+        val result = restoreDesktopAfterDeath()
+        desktopDisplayId = -1
+        return result
+    }
+
     // ------------------------------------------------------------------
     // 系统服务 / 命令
     // ------------------------------------------------------------------
+
+    @Synchronized
+    override fun returnMouseToInternal(): String = runCatching {
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: error("无 DisplayManager")
+        val internal = dm.getDisplay(resolveInternalDisplayIdViaContext()) ?: error("内屏不可读取")
+        check(Reflect.call(internal, "getType").getOrNull() == 1) { "目标不是内屏" }
+        // Bring the destination panel back before routing its physical pointer.
+        val power = powerController.setPower(internal.displayId, DisplayPowerController.POWER_MODE_NORMAL)
+        android.os.SystemClock.sleep(200)
+        val cleared = inputController.clearAllAssociations()
+        // Unassociated mice follow WMS policy, which may still select the external desktop.
+        val bound = inputController.bindAllExternalInputToDisplay(internal)
+        val verified = power.any { it.ok } && bound.lastOrNull { it.channel == "读回验证" }?.ok == true
+        "RESULT_OK=$verified\n鼠标返回内屏 displayId=${internal.displayId}\n" +
+            power.joinToString("\n") { it.toText() } + "\n" + (cleared + bound).joinToString("\n") { it.toText() }
+    }.getOrElse { "RESULT_OK=false\n鼠标回内屏失败：${Reflect.describe(it)}" }
 
     /**
      * 取系统服务 Binder。
@@ -363,6 +495,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
      * 6. 清除逻辑尺寸覆盖 + 重置用户首选 Mode
      */
     override fun restoreAll(): String {
+        var allOk = true
         val sb = StringBuilder()
         sb.appendLine("=== 一键还原所有设置 ===")
         sb.appendLine("uid=${android.os.Process.myUid()}")
@@ -373,35 +506,42 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
             val internal = resolveInternalDisplayIdViaContext()
             sb.appendLine("[1] 恢复内屏电源")
             val reports = powerController.setPower(internal, DisplayPowerController.POWER_MODE_NORMAL)
+            if (reports.none { it.ok }) allOk = false
             reports.forEach { sb.appendLine("    " + it.toText()) }
-        }.onFailure { sb.appendLine("[1] 失败: ${Reflect.describe(it)}") }
+        }.onFailure { allOk = false; sb.appendLine("[1] 失败: ${Reflect.describe(it)}") }
         sb.appendLine()
 
         // 2) 内屏窗口模式还原 FULLSCREEN
         runCatching {
             val internal = resolveInternalDisplayIdViaContext()
             sb.appendLine("[2] 还原内屏窗口模式为 FULLSCREEN")
-            sb.appendLine("    " + mirrorController.setWindowingMode(
+            val result = mirrorController.setWindowingMode(
                 internal,
                 DisplayMirrorController.WINDOWING_MODE_FULLSCREEN,
-            ).toText())
-        }.onFailure { sb.appendLine("[2] 失败: ${Reflect.describe(it)}") }
+            )
+            if (!result.ok) allOk = false
+            sb.appendLine("    " + result.toText())
+        }.onFailure { allOk = false; sb.appendLine("[2] 失败: ${Reflect.describe(it)}") }
         sb.appendLine()
 
         // 3) 解除输入关联
         runCatching {
             sb.appendLine("[3] 解除所有输入设备关联")
             val reports = inputController.clearAllAssociations()
+            if (reports.any { !it.ok }) allOk = false
             sb.appendLine("    处理条目数 = ${reports.size}")
             reports.filter { !it.ok }.take(5).forEach { sb.appendLine("    " + it.toText()) }
-        }.onFailure { sb.appendLine("[3] 失败: ${Reflect.describe(it)}") }
+        }.onFailure { allOk = false; sb.appendLine("[3] 失败: ${Reflect.describe(it)}") }
         sb.appendLine()
 
         // 4) 清除音频输出固定
         runCatching {
             sb.appendLine("[4] 清除音频输出固定")
-            audioController.unpinMediaOutput().forEach { sb.appendLine("    " + it.toText()) }
-        }.onFailure { sb.appendLine("[4] 失败: ${Reflect.describe(it)}") }
+            audioController.unpinMediaOutput().forEach {
+                if (!it.ok) allOk = false
+                sb.appendLine("    " + it.toText())
+            }
+        }.onFailure { allOk = false; sb.appendLine("[4] 失败: ${Reflect.describe(it)}") }
         sb.appendLine()
 
         // 5) 还原显示拓扑
@@ -414,28 +554,38 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
                 if (snap == null) {
                     sb.appendLine("    没有拓扑快照（本应用从未改过拓扑），跳过")
                 } else {
-                    sb.appendLine("    " + topologyController.restoreTopologyBytes(snap.second).toText())
-                    clearTopologySnapshot()
+                    val restored = topologyController.restoreTopologyBytes(snap.second)
+                    sb.appendLine("    " + restored.toText())
+                    if (restored.ok) clearTopologySnapshot() else allOk = false
                 }
             }
-        }.onFailure { sb.appendLine("[5] 失败: ${Reflect.describe(it)}") }
+        }.onFailure { allOk = false; sb.appendLine("[5] 失败: ${Reflect.describe(it)}") }
         sb.appendLine()
 
         // 6) 清除尺寸覆盖与用户首选 Mode
         runCatching {
             sb.appendLine("[6] 清除逻辑尺寸覆盖 / 重置首选 Mode")
             val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
-            dm?.displays?.forEach { d ->
-                resolutionController.clearForcedDisplaySize(d.displayId).forEach {
+                ?: error("无法获取 DisplayManager")
+            dm.displays.filter {
+                val getType = Reflect.findMethod(it.javaClass, "getType")
+                    ?: error("无法读取 Display ${it.displayId} 类型")
+                getType.invoke(it) == 2
+            }.forEach { d ->
+                val sizeReports = resolutionController.clearForcedDisplaySize(d.displayId)
+                if (sizeReports.none { it.ok }) allOk = false
+                sizeReports.forEach {
                     sb.appendLine("    " + d.displayId + " " + it.toText())
                 }
-                sb.appendLine("    " + d.displayId + " " + resolutionController.resetUserPreferredMode(d.displayId).toText())
+                val mode = resolutionController.resetUserPreferredMode(d.displayId)
+                if (!mode.ok) allOk = false
+                sb.appendLine("    " + d.displayId + " " + mode.toText())
             }
-        }.onFailure { sb.appendLine("[6] 失败: ${Reflect.describe(it)}") }
+        }.onFailure { allOk = false; sb.appendLine("[6] 失败: ${Reflect.describe(it)}") }
         sb.appendLine()
 
-        sb.appendLine("RESULT_OK=true")
-        sb.appendLine("还原完成。建议重新插拔外接屏让系统重新计算显示策略。")
+        sb.appendLine("RESULT_OK=$allOk")
+        sb.appendLine(if (allOk) "还原操作完成。" else "部分还原失败，请查看上方结果后重试。")
         return clean(sb.toString())
     }
 
@@ -547,6 +697,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
 
     override fun listInputDevices(): String = clean(inputController.describe())
 
+    @Synchronized
     override fun bindInputToDisplay(displayId: Int): String = clean(buildString {
         appendLine("=== 把外接输入设备绑定到 displayId=$displayId ===")
         val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
@@ -559,15 +710,17 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         // 只绑鼠标/指针；**键盘默认不绑** —— Android 的设备关联是静态的，
         // 绑了键盘它就只往外屏送键事件；而键事件走焦点窗口，
         // 不绑反而能让两块屏按焦点各自接收键盘输入。
+        val cleared = inputController.clearAllAssociations()
         val reports = inputController.bindAllExternalInputToDisplay(
             display = display,
             includeMouse = true,
             includeKeyboard = false,
         )
-        val ok = reports.any { it.ok && it.channel.startsWith("add") }
+        val ok = reports.lastOrNull { it.channel == "读回验证" }?.ok == true
         appendLine("RESULT_OK=$ok")
         appendLine()
-        reports.forEach { appendLine(it.toText()) }
+        (cleared + reports).forEach { appendLine(it.toText()) }
+        appendLine("此结果仅验证输入设备关联；外屏可见原生光标、Moonlight 相对鼠标和跨屏流转仍需分别实测。")
         if (!ok) {
             appendLine()
             appendLine("说明：绑定失败时鼠标/触摸仍只能作用于默认屏。")
@@ -578,7 +731,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     override fun clearInputAssociations(): String = clean(buildString {
         appendLine("=== 解除输入关联，恢复默认 ===")
         val reports = inputController.clearAllAssociations()
-        appendLine("RESULT_OK=${reports.any { it.ok }}")
+        appendLine("RESULT_OK=${reports.isNotEmpty() && reports.all { it.ok }}")
         appendLine()
         reports.forEach { appendLine(it.toText()) }
     })
@@ -1391,6 +1544,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     // ------------------------------------------------------------------
 
     override fun destroy() {
+        runCatching { restoreDesktopAfterDeath() }
         ServiceContextHolder.context = null
         System.exit(0)
     }

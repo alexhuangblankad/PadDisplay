@@ -33,6 +33,125 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private val settings = SettingsRepository(app)
     val systemService = SystemDisplayService(app, settings)
     val hotplug = DisplayHotplugManager(app, settings, systemService)
+    private val densityOriginal = app.getSharedPreferences("display_density_original", Context.MODE_PRIVATE)
+
+    private fun densityKey(display: DisplaySnapshot) =
+        "${display.name}|${display.address}|${display.physicalDisplayId}"
+
+    private fun sameExternal(display: DisplaySnapshot): Boolean =
+        systemService.enumerateDisplays().any {
+            it.displayId == display.displayId && it.typeCode == 2 && densityKey(it) == densityKey(display)
+        }
+
+    fun adjustExternalScale(percent: Int?) {
+        if (_ui.value.busy || _ui.value.pendingConfirm != null) return
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            var before: com.paddisplay.app.system.DisplayDensityController.State? = null
+            var target: DisplaySnapshot? = null
+            try {
+                val external = systemService.primaryExternal() ?: error("未连接外屏")
+                require(external.typeCode == 2 && external.displayId > 0) { "只支持物理外屏缩放" }
+                target = external
+                before = systemService.displayDensity.read(external.displayId)
+                val original = before
+                val key = densityKey(external)
+                if (!densityOriginal.contains(key)) {
+                    check(densityOriginal.edit().putInt(key, original.override ?: -1).commit()) {
+                        "无法保存缩放恢复记录"
+                    }
+                }
+                val dpi = percent?.let {
+                    require(it in 75..200)
+                    (original.physical * it / 100.0).toInt()
+                }
+                check(sameExternal(external)) { "外屏已断开或重新枚举，请刷新后再试" }
+                val actual = systemService.displayDensity.write(external.displayId, dpi)
+                _ui.value = _ui.value.copy(lastResult = "外屏缩放已读回：${actual.effective} DPI，请确认界面是否合适。")
+                startConfirmCountdown(
+                    "保留外屏缩放？", "当前 ${actual.effective} DPI；未确认将恢复修改前的大小。",
+                    onKeep = {
+                        if (percent != null) com.paddisplay.app.desktop.DesktopStore(getApplication()).saveScale(external, percent)
+                        refreshDisplays()
+                    },
+                    onRollback = {
+                        runCatching {
+                            check(sameExternal(external)) { "原外屏已断开，未向其它屏写入" }
+                            systemService.displayDensity.write(external.displayId, original.override)
+                        }.fold(
+                            { _ui.value = _ui.value.copy(lastResult = "已读回确认恢复原外屏缩放") },
+                            { _ui.value = _ui.value.copy(lastResult = "缩放恢复失败：${it.message}；请用恢复原缩放重试") },
+                        )
+                        refreshDisplays()
+                    },
+                )
+            } catch (t: Throwable) {
+                val external = target
+                val original = before
+                val rollback = if (external != null && original != null) runCatching {
+                    check(sameExternal(external)) { "原外屏已断开" }
+                    systemService.displayDensity.write(external.displayId, original.override)
+                }.fold({ "已恢复修改前 DPI" }, { "恢复失败：${it.message}" }) else "尚未修改"
+                _ui.value = _ui.value.copy(lastResult = "缩放失败：${t.message}；$rollback")
+            } finally {
+                _ui.value = _ui.value.copy(busy = false)
+            }
+        }
+    }
+
+    private suspend fun restoreOriginalScale(): String {
+        val external = systemService.primaryExternal() ?: return "外屏未连接，缩放恢复记录保留"
+        val key = densityKey(external)
+        if (!densityOriginal.contains(key)) return "本应用未保存该外屏的缩放改动"
+        check(sameExternal(external)) { "外屏已重新枚举" }
+        val original = densityOriginal.getInt(key, -1).takeIf { it >= 0 }
+        systemService.displayDensity.write(external.displayId, original)
+        check(densityOriginal.edit().remove(key).commit()) { "DPI 已恢复，但未能清除恢复记录" }
+        return "已读回确认恢复原外屏缩放"
+    }
+
+    fun restoreExternalScale() {
+        if (_ui.value.busy || _ui.value.pendingConfirm != null) return
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val result = runCatching {
+                val external = systemService.primaryExternal()
+                val restored = restoreOriginalScale()
+                if (external != null) com.paddisplay.app.desktop.DesktopStore(getApplication()).clearScale(external)
+                restored
+            }
+            _ui.value = _ui.value.copy(busy = false, lastResult = result.getOrElse { "缩放恢复失败：${it.message}" })
+            refreshDisplays()
+        }
+    }
+
+    fun startHostMode() {
+        if (com.paddisplay.app.desktop.DesktopState.state.value.running) {
+            com.paddisplay.app.desktop.DesktopService.send(getApplication(), "home")
+            return
+        }
+        if (_ui.value.busy || _ui.value.pendingConfirm != null) return
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            try {
+                val extended = systemService.oneClickExtend()
+                check(extended.ok) { extended.toText() }
+                val external = systemService.primaryExternal() ?: error("外屏已断开")
+                val apps = systemService.listLaunchableApps()
+                com.paddisplay.app.desktop.DesktopService.send(getApplication())
+                _ui.value = _ui.value.copy(
+                    appDrawerExpanded = true, launchableApps = apps,
+                    lastResult = extended.toText() + "\n桌面服务已请求启动，鼠标关联结果见桌面状态。",
+                )
+                appendLog("主机模式服务已请求启动；外屏光标仍需实际确认")
+            } catch (t: Throwable) {
+                _ui.value = _ui.value.copy(lastResult = "主机模式未完成：${t.message}")
+            } finally {
+                _ui.value = _ui.value.copy(busy = false)
+                refreshDisplays()
+            }
+        }
+    }
 
     // ------------------------------------------------------------------
     // UI 状态
@@ -697,14 +816,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
      * 先点亮内屏，保证用户看得见结果。
      */
     fun restoreAll() {
+        if (_ui.value.busy) return
         viewModelScope.launch {
             _ui.value = _ui.value.copy(busy = true)
+            if (com.paddisplay.app.desktop.DesktopState.state.value.running) {
+                com.paddisplay.app.desktop.DesktopService.send(getApplication(), "stop")
+                val stopped = kotlinx.coroutines.withTimeoutOrNull(15000) {
+                    com.paddisplay.app.desktop.DesktopState.state.first { !it.running }
+                }
+                if (stopped == null) {
+                    _ui.value = _ui.value.copy(busy = false, lastResult = "桌面退出尚未完成，请稍后重试还原。")
+                    return@launch
+                }
+            }
             val r = systemService.restoreAll()
-            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            val mouse = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { ShizukuManager.service?.returnMouseToInternal() ?: "Shizuku 未连接，鼠标回内屏未确认" }
+                    .getOrElse { "鼠标回内屏失败：${it.message}" }
+            }
+            val scale = runCatching { restoreOriginalScale() }.getOrElse { "缩放恢复失败：${it.message}" }
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText() + "\n" + scale + "\n" + mouse)
             appendLog("一键还原：${r.toText().replace("\n", " / ")}")
             hotplug.markInternalTurnedOff(false)
             delay(600)
             refreshDisplays()
+        }
+    }
+
+    fun returnMouseToTablet() {
+        if (_ui.value.busy || com.paddisplay.app.desktop.DesktopState.state.value.running) return
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val output = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                runCatching { ShizukuManager.service?.returnMouseToInternal() ?: "Shizuku 未连接，无法恢复鼠标" }
+                    .getOrElse { "鼠标恢复失败：${it.message}" }
+            }
+            _ui.value = _ui.value.copy(busy = false, lastResult = output)
+            com.paddisplay.app.desktop.DesktopState.state.value = com.paddisplay.app.desktop.DesktopSnapshot(message = output)
+            appendLog(output)
         }
     }
 
@@ -869,12 +1018,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val realWindowingMode = systemService.externalWindowingMode(external.displayId)
             val mode = when {
                 _ui.value.internalTurnedOff -> DisplayMode.EXTERNAL_ONLY
-                realWindowingMode == com.paddisplay.app.system.DisplayMirrorController.WINDOWING_MODE_FULLSCREEN ->
-                    DisplayMode.EXTEND
-                // 读不到 windowingMode 时，才退回尺寸启发式
-                realWindowingMode == null && systemService.looksMirrored() -> DisplayMode.MIRROR
-                realWindowingMode == null -> DisplayMode.EXTEND
-                else -> DisplayMode.EXTEND
+                com.paddisplay.app.desktop.DesktopState.state.value.running -> DisplayMode.EXTEND
+                // Window mode and matching resolutions cannot prove the physical mirror source.
+                else -> DisplayMode.UNKNOWN
             }
             _ui.value = _ui.value.copy(displayMode = mode, displayModeDetail = detail)
         }

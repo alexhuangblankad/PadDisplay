@@ -6,12 +6,18 @@
         android:name="android.hardware.type.pc"
         android:required="false" />
 
-    <!--
-        自绘光标浮层需要「显示在其他应用上层」。
-        为什么必须自己画：系统只给真实鼠标（USB/uinput）画指针，
-        应用侧注入的事件不会点亮它，非 root 没有别的接口。
-    -->
+    <!-- Native Dock and window decorations; no cursor drawing or mouse event relay. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -35,6 +41,24 @@
         </activity>
 
         <!-- Shizuku：本应用自己的 UserService（运行在 shell 权限进程内） -->
+        <activity android:name=".desktop.DesktopActivity" android:exported="false"
+            android:taskAffinity="com.paddisplay.app.externaldesktop"
+            android:launchMode="singleTask" android:resizeableActivity="true"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density|smallestScreenSize|uiMode"
+            android:theme="@style/Theme.PadDisplay" />
+        <service android:name=".desktop.DesktopService" android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="User-started physical external desktop session, taskbar and input/display reconnect recovery" />
+        </service>
+        <activity android:name=".desktop.EscapeNavigationActivity" android:exported="false"
+            android:taskAffinity="com.paddisplay.app.escape" android:launchMode="singleTask"
+            android:excludeFromRecents="true" android:theme="@style/Theme.PadDisplay.Escape" />
+        <service android:name=".desktop.DesktopShortcutService" android:exported="true"
+            android:label="PadDisplay 全屏导航快捷键" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter><action android:name="android.accessibilityservice.AccessibilityService" /></intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/desktop_shortcut_service" />
+        </service>
         <service
             android:name=".system.PadDisplayUserService"
             android:exported="false"

@@ -49,7 +49,7 @@ object ShizukuManager {
     private const val USER_SERVICE_PROCESS_SUFFIX = "shizuku_service"
 
     /** 接口版本号：改 AIDL 时 +1，让 Shizuku 丢弃旧实例重新拉起。 */
-    private const val USER_SERVICE_VERSION = 1
+    private const val USER_SERVICE_VERSION = com.paddisplay.app.BuildConfig.VERSION_CODE
 
     // ------------------------------------------------------------------
     // 状态

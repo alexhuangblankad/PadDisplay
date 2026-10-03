@@ -35,6 +35,7 @@ class SystemDisplayService(
     }
 
     val repo = DisplayRepository(context)
+    val displayDensity = DisplayDensityController(::execCommand)
 
     /** 统一的操作结果。 */
     data class OpResult(
@@ -624,8 +625,9 @@ class SystemDisplayService(
 
     /** 列出所有可启动应用（解析 launcher Activity 组件）。 */
     suspend fun listLaunchableApps(): List<LaunchableApp> = withContext(Dispatchers.IO) {
-        val svc = service() ?: return@withContext emptyList()
-        runCatching {
+        val svc = service()
+        val privileged = runCatching {
+            if (svc == null) return@runCatching emptyList<LaunchableApp>()
             svc.listLaunchableApps()
                 .lineSequence()
                 .map { it.trim() }
@@ -635,6 +637,15 @@ class SystemDisplayService(
                     LaunchableApp(parts[0], parts[1], parts[2])
                 }
                 .toList()
+        }.getOrDefault(emptyList())
+        if (privileged.isNotEmpty()) return@withContext privileged
+        runCatching {
+            val pm = context.packageManager
+            pm.queryIntentActivities(android.content.Intent(android.content.Intent.ACTION_MAIN)
+                .addCategory(android.content.Intent.CATEGORY_LAUNCHER), 0).map { info ->
+                LaunchableApp(info.activityInfo.packageName, info.loadLabel(pm).toString(),
+                    android.content.ComponentName(info.activityInfo.packageName, info.activityInfo.name).flattenToString())
+            }.distinctBy { it.component }.sortedBy { it.label }
         }.getOrDefault(emptyList())
     }
 
@@ -717,7 +728,7 @@ class SystemDisplayService(
                 val out = svc.restoreAll()
                 OpResult(
                     out.contains("RESULT_OK=true"),
-                    "已还原所有设置",
+                    if (out.contains("RESULT_OK=true")) "还原操作完成" else "部分还原失败",
                     out.lines().filter { it.isNotBlank() },
                 )
             }.getOrElse { OpResult(false, "还原失败", listOf(Reflect.describe(it))) }
@@ -727,7 +738,7 @@ class SystemDisplayService(
             lines = listOf(
                 "本应用改动的是系统级状态（输入关联 / 音频固定 / 拓扑 / 尺寸覆盖），",
                 "没有 Shizuku 就改不回来。",
-                "万一卡住：重启设备一定能恢复。",
+                "请重新连接 Shizuku 后重试；DPI 等设置可能在重启后保留。",
             ),
         )
     }

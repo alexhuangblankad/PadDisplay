@@ -4,12 +4,30 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.compose.BackHandler
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.Modifier
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.Surface
+import com.paddisplay.app.desktop.DesktopHub
 
 /** PadDisplay 深色主题（控制外接显示器时深色更省眼）。 */
 private val PadDisplayColors = darkColorScheme(
@@ -30,15 +48,40 @@ private val PadDisplayColors = darkColorScheme(
 )
 
 class MainActivity : ComponentActivity() {
+    private var advancedRequested by mutableStateOf(false)
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        advancedRequested = intent.getBooleanExtra("advanced", false)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MaterialTheme(colorScheme = PadDisplayColors) {
+            PadTheme(this) {
                 val vm: MainViewModel = viewModel()
                 val ui by vm.ui.collectAsState()
-                MainScreen(vm = vm, ui = ui)
+                var controls by rememberSaveable { mutableStateOf(intent.getBooleanExtra("advanced", false)) }
+                androidx.compose.runtime.LaunchedEffect(advancedRequested) {
+                    if (advancedRequested) { controls = true; advancedRequested = false }
+                }
+                BackHandler(controls) { controls = false }
+                val light = MaterialTheme.colorScheme.background.luminance() > .5f
+                androidx.compose.runtime.SideEffect {
+                    androidx.core.view.WindowCompat.getInsetsController(window, window.decorView).apply {
+                        isAppearanceLightStatusBars = light
+                        isAppearanceLightNavigationBars = light
+                    }
+                }
+                Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 28.dp)) {
+                if (controls) {
+                    Column(Modifier.fillMaxSize()) {
+                        TextButton({ controls = false }) { Text("← 返回桌面") }
+                        Box(Modifier.weight(1f)) { MainScreen(vm = vm, ui = ui) }
+                    }
+                } else DesktopHub(vm, ui) { controls = true }
+                }
             }
         }
     }

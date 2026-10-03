@@ -6,6 +6,7 @@
 // 注意：所有方法都返回 String（除 destroy 外），
 // 以便在 ColorOS 上出现异常时把完整错误信息回传到 UI 的“诊断信息”页面。
 package com.paddisplay.app;
+import android.os.IBinder;
 
 interface IPadDisplayService {
 
@@ -314,4 +315,15 @@ interface IPadDisplayService {
 
     /** 结束 UserService 进程。 */
     void destroy();
+
+    String desktopTasks(int displayId);
+    String launchDesktopApp(int displayId, String component, boolean freeform);
+    String desktopTaskAction(int displayId, int taskId, String action);
+    String resizeDesktopTask(int displayId, int taskId, int left, int top, int right, int bottom);
+    String registerDesktopSession(IBinder token, int displayId, int originalDensity);
+    String releaseDesktopSession(IBinder token);
+    String returnMouseToInternal();
+    String prepareDesktopDisplay(int displayId);
+    String restoreDesktopDisplay(int displayId);
+    String internalBrightness(float value);
 }

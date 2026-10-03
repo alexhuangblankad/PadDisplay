@@ -62,7 +62,7 @@ class CoordinateSpaceProbe(
         // 定位 "mDisplayId=N" 起始，直到下一个 "mDisplayId="
         var start = -1
         for (i in lines.indices) {
-            if (lines[i].contains("mDisplayId=$displayId")) {
+            if (Regex("""\bmDisplayId=$displayId\b""").containsMatchIn(lines[i])) {
                 start = i
                 break
             }
