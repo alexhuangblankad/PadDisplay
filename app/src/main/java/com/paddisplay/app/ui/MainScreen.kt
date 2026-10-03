@@ -95,6 +95,9 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
             // ============================================================
             // 以下全部收进「高级选项」，默认收起
             // ============================================================
+            // 触控板：解决「鼠标不能跨屏」的实际替代方案
+            item { TouchpadEntryCard(ui = ui) }
+
             // 应用抽屉 —— 外接屏的「开始菜单」，这是你要的"桌面"
             item { AppDrawerCard(vm = vm, ui = ui) }
 
@@ -213,6 +216,52 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
             onCopy = { vm.copyDiagnostics(context) },
             onClose = { vm.closeDiagnostics() },
         )
+    }
+}
+
+/**
+ * 触控板入口 —— 「鼠标不能跨屏」的实际替代方案。
+ *
+ * 鼠标自由跨屏依赖 DisplayTopology，而本机该 feature flag 被 ROM 关闭，
+ * 非 root 打不开。所以改为：用平板当外接屏的触控板（自绘光标 + 注入指针）。
+ */
+@Composable
+private fun TouchpadEntryCard(ui: MainViewModel.UiState) {
+    val context = LocalContext.current
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(
+                "用平板当外接屏的触控板",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "鼠标自由跨两块屏依赖系统的 DisplayTopology，而本机该能力被 ROM 关闭" +
+                    "（探测结果是 supported=false），非 root 打不开。\n\n" +
+                    "所以换一条已跑通的路：在外接屏上自绘一个光标（系统只给真实鼠标画指针），" +
+                    "再用注入的方式把你的滑动与点击送进外接屏。\n" +
+                    "效果：手指在平板上滑 -> 外接屏上的光标跟着走 -> 轻点就是单击。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            Button(
+                onClick = { com.paddisplay.app.touchpad.TouchpadActivity.start(context) },
+                enabled = ui.shizuku.canControl,
+                modifier = Modifier.fillMaxWidth().height(48.dp),
+            ) { Text("打开触控板") }
+            if (!ui.shizuku.canControl) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "需要 Shizuku（注入指针要用 shell 身份）。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+        }
     }
 }
 

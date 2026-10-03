@@ -723,11 +723,12 @@ class SystemDisplayService(
             }
         }.onFailure { lines += "⚠️ 音频检查失败：${Reflect.describe(it)}" }
 
-        // 4) 外屏开一个应用，形成第二个桌面
-        val launch = launchAppOnDisplay(external.displayId, component = "com.android.settings/.Settings")
-        lines += (if (launch.ok) "✅ " else "❌ ") + "已在外接屏打开第二个桌面"
+        // 4) 不再替用户决定开哪个应用 —— 早先写死打开「设置」，
+        //    结果外接屏被设置占住、用户以为卡住了。现在由用户从应用抽屉里自己选。
+        lines += "✅ 外接屏已就绪 —— 用「打开应用到外接屏」自己选要开的应用"
+        lines += "（早先这里会写死打开「设置」，所以你会看到外屏被设置占住；现已移除）"
 
-        OpResult(ok = ext.ok && launch.ok, title = "一键完成：外接屏已独立显示", lines = lines)
+        OpResult(ok = ext.ok, title = "一键完成：外接屏已独立显示", lines = lines)
     }
 
     // ------------------------------------------------------------------

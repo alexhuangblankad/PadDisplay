@@ -742,6 +742,30 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     })
 
     // ------------------------------------------------------------------
+    // 指针注入（触控板方案）
+    // ------------------------------------------------------------------
+
+    private val pointerInjector: PointerInjector by lazy {
+        PointerInjector(
+            inputManagerBinder = PhysicalDisplayAccess.inputManagerBinder(),
+            shellRunner = ::execRaw,
+        )
+    }
+
+    override fun injectPointer(displayId: Int, action: Int, x: Int, y: Int, button: Int): String =
+        clean(buildString {
+            val r = pointerInjector.injectDownUp(displayId, action, x, y, button)
+            appendLine("RESULT_OK=${r.ok}")
+            appendLine("displayId=$displayId action=$action ($x,$y) button=$button -> ${r.detail}")
+        })
+
+    override fun injectPointerMove(displayId: Int, x: Int, y: Int): String = clean(buildString {
+        val r = pointerInjector.injectMove(displayId, x, y)
+        appendLine("RESULT_OK=${r.ok}")
+        appendLine("displayId=$displayId move ($x,$y) -> ${r.detail}")
+    })
+
+    // ------------------------------------------------------------------
     // 应用启动器（外接屏的「开始菜单」）
     // ------------------------------------------------------------------
 

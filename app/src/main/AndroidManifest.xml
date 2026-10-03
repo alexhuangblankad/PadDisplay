@@ -6,6 +6,13 @@
         android:name="android.hardware.type.pc"
         android:required="false" />
 
+    <!--
+        自绘光标浮层需要「显示在其他应用上层」。
+        为什么必须自己画：系统只给真实鼠标（USB/uinput）画指针，
+        应用侧注入的事件不会点亮它，非 root 没有别的接口。
+    -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
     <application
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
@@ -32,6 +39,14 @@
             android:name=".system.PadDisplayUserService"
             android:exported="false"
             android:process=":shizuku_service" />
+
+        <!-- 触控板：用平板当外接屏的触控板（自绘光标 + 注入指针） -->
+        <activity
+            android:name=".touchpad.TouchpadActivity"
+            android:exported="false"
+            android:label="触控板"
+            android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density|smallestScreenSize|uiMode"
+            android:theme="@style/Theme.PadDisplay" />
 
         <!-- Shizuku 权限申请入口 -->
         <provider

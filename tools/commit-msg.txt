@@ -1,54 +1,63 @@
-v0.4.0: 应用抽屉（外接屏的开始菜单）—— 修掉"只能开设置"
+v0.4.1: 触控板（自绘光标 + 注入指针）；移除写死打开设置
 
-## 只能打开设置的原因（实现缺陷）
+## 修两个用户指出的问题
 
-早先启动应用时写死了 com.android.settings/.Settings 这个组件，
-所以外接屏上只能打开设置。另外那条代码用 am start -p <包名>，
-而 am start 期望的是 component（-n），-p 不可靠。
-因此只有显式给了 -n 的设置能成功。
+### 1. 外接屏卡在设置，是代码写死的
 
-## 本版修好：应用抽屉
+一键完成的最后一步执行的是
+  am start --display 4 -n com.android.settings/.Settings
+我把设置这个组件写死了，所以外屏被设置占住、什么都干不了。
+本版移除该步骤：一键开始只负责把外接屏独立出来，
+开哪个应用由用户从「打开应用到外接屏」自己选。
 
-主界面（不用进高级选项）新增「打开应用到外接屏」：
-- 解析设备上所有应用的 launcher Activity 组件
-- 列出应用清单，每个应用后有「外屏」「内屏」两个按钮
-- 外屏走 am start --display <外接屏id> -n <组件>（系统自带能力，已验证可满屏 4K）
+### 2. 用户装的是 v0.3.3
 
-底层是 am start --display，这次用正确的 component 形式并覆盖所有应用。
+日志抬头显示 v0.3.3，应用抽屉是 v0.4.0 才有的，
+所以"无法打开其他 app"部分只是版本没更新。
 
-## 鼠标跨屏：明确做不到，原因已查清
+## 鼠标问题：换一条能走通的路
 
-AOSP 里指针跨屏能力来自 DisplayTopology：
-    if (mFlags.isDisplayTopologyEnabled()) {
-        mInputManagerInternal.setDisplayTopology(graph);
-    }
-而该机探测结果为 supported=false、系统返回 null，说明 ColorOS 关闭了该 feature flag。
-服务端 mDisplayTopologyCoordinator == null，setDisplayTopology 是静默空操作。
-要打开必须改系统 framework flag，需要 root，超出用户设定的边界。
+参考项目 AdaptiveScreenPlus 的架构（已跑通）：
+- 系统只给真实鼠标画指针，注入事件不会点亮它 -> 光标必须自己画
+  （外接屏上的 TYPE_APPLICATION_OVERLAY 悬浮窗）
+- 点击/移动靠注入：IInputManager.injectInputEvent + MotionEvent.setDisplayId
+  （不用 input 命令：参考项目实测一条 47ms，拖动会一跳一跳）
+- 坐标空间从系统侧量：dumpsys window displays 的 cur=WxH
+  （不能用 Display.getRealSize()，会被应用兼容缩放污染）
 
-因此：
-- 两个桌面（外屏独立跑应用）：可以，本版应用抽屉让它真正可用
-- 鼠标不飘逸：用户已验证修好
-- 分辨率：4K@60 本就是外屏原生模式
-- 鼠标跨屏拖拽 / 两屏左右上下位置：需要 DisplayTopology，非 root 无解
+### 新增「用平板当外接屏的触控板」
 
-## 若要鼠标跨屏，只有两条路
+主界面入口 -> 触控板页面：
+- 手指滑动：外接屏上自绘光标跟随移动，并注入指针移动事件
+- 轻点：在光标处注入单击（DOWN+UP 左键）
+- 右键按钮：注入右键
+- 快/慢：灵敏度
 
-1. root 后打开该 feature flag（用户已表示不做 root）
-2. 改用手势控制：参考 AdaptiveScreenPlus 的做法，在平板上做触控板页面，
-   用 IInputManager.injectInputEvent + MotionEvent.setDisplayId 把触摸注入到外接屏，
-   并自绘光标浮层（系统只给真实鼠标画指针）。这不是"鼠标跨屏"，
-   而是"用平板当外接屏的触控板"。等用户选择。
+需要 Shizuku（注入指针）与「显示在其他应用上层」（画光标）。
+
+## 关于打包 standby / smartdock
+
+未做，理由：
+1. 是别人的 GPL 应用，整包再分发有许可与来源问题
+2. 打包了也解决不了：它们同样依赖被 ColorOS 关闭的 DisplayTopology
+   或系统桌面模式，在该机照样跑不出效果
+3. 自有「应用抽屉」已能在外屏开任意应用，"两个桌面"这条已通
 
 ## 新增/修改文件
 
-- IPadDisplayService.aidl：listLaunchableApps / launchPackageOnDisplay
-- PadDisplayUserService.kt：解析 launcher 组件并 am start --display -n
-- SystemDisplayService.kt：LaunchableApp 数据类与两个方法
-- MainViewModel.kt：toggleAppDrawer / refreshLaunchableApps /
-  launchAppOnExternal / launchAppOnInternal、UiState 两个新字段
-- MainScreen.kt：AppDrawerCard（放在主操作区之后，不进高级选项）
+- touchpad/CursorOverlay.kt：外接屏上的自绘光标（display context + 悬浮窗，
+  活动范围用 dumpsys window displays 的 cur=WxH 校准）
+- touchpad/TouchpadView.kt：触控板手势（相对移动 + 轻点判定）
+- touchpad/TouchpadActivity.kt：触控板页面（Compose + AndroidView）
+- system/PointerInjector.kt：MotionEvent + setDisplayId 反射 +
+  IInputManager.injectInputEvent（code=11，真实编译器验证）
+- IPadDisplayService.aidl：injectPointer / injectPointerMove
+- PadDisplayUserService.kt：指针注入实现
+- AndroidManifest.xml：SYSTEM_ALERT_WINDOW 权限 + TouchpadActivity 注册
+- MainScreen.kt：TouchpadEntryCard 入口
+- SystemDisplayService.kt：一键开始不再写死打开设置
 
 ## 说明
 
-依然没有真机验证。
+依然没有真机验证。触控板每一步都按参考项目的实测结论实现，
+但能否在 ColorOS 上跑通需实测反馈。

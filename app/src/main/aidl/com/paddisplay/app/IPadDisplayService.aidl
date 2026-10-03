@@ -195,6 +195,27 @@ interface IPadDisplayService {
     /** 把指定包名的主 Activity 启动到目标屏。 */
     String launchPackageOnDisplay(int displayId, String packageName);
 
+    // ------------------------------------------------------------------
+    // 指针注入（触控板方案）
+    //
+    // 系统只给真实鼠标画指针，注入事件不会点亮它，所以外接屏上的光标由
+    // 客户端自绘（见 CursorOverlay），这里只负责把"移动/点击"送进目标屏。
+    //
+    // 用 IInputManager.injectInputEvent 而不是 `input` 命令：
+    //   参考项目实测 `input` 每条要起进程装 JVM，约 47ms/条，
+    //   拖动会一跳一跳；injectInputEvent 可到几百/秒、单次 1ms 级。
+    // ------------------------------------------------------------------
+
+    /**
+     * 向目标屏注入一次指针按下/抬起。
+     * @param action 0=DOWN 1=UP
+     * @param button 1=左键 2=右键（MotionEvent.BUTTON_*）
+     */
+    String injectPointer(int displayId, int action, int x, int y, int button);
+
+    /** 向目标屏注入一次指针移动。 */
+    String injectPointerMove(int displayId, int x, int y);
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 
