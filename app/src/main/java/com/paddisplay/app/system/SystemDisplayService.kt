@@ -550,6 +550,66 @@ class SystemDisplayService(
         }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
     }
 
+    // ------------------------------------------------------------------
+    // 多屏拓扑（左右关系）
+    // ------------------------------------------------------------------
+
+    /** 探测本机是否支持 DisplayTopology（决定能否设置左右关系）。 */
+    suspend fun probeDisplayTopology(): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.probeDisplayTopology() }
+                .getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /** 设置两块屏的左右关系。 */
+    suspend fun setDisplayTopologyLayout(
+        primaryDisplayId: Int,
+        otherDisplayId: Int,
+        otherOnRight: Boolean,
+        primarySize: Pair<Int, Int>,
+        otherSize: Pair<Int, Int>,
+    ): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+        runCatching {
+            val out = svc.setDisplayTopologyLayout(
+                primaryDisplayId,
+                otherDisplayId,
+                otherOnRight,
+                primarySize.first,
+                primarySize.second,
+                otherSize.first,
+                otherSize.second,
+            )
+            val ok = out.contains("RESULT_OK=true")
+            OpResult(
+                ok,
+                if (ok) {
+                    "已设置：$otherDisplayId 在" + (if (otherOnRight) "右" else "左") + "侧"
+                } else {
+                    "设置未生效（很可能是 DisplayTopology 在本机关闭）"
+                },
+                out.lines().filter { it.isNotBlank() },
+            )
+        }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+
+    /** 把应用启动到指定桌面。 */
+    suspend fun launchAppOnDisplay(
+        displayId: Int,
+        component: String = "",
+        packageName: String = "",
+    ): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+        runCatching {
+            val out = svc.launchAppOnDisplay(displayId, component, packageName)
+            val ok = out.contains("RESULT_OK=true")
+            OpResult(ok, if (ok) "已启动到桌面 $displayId" else "启动失败", out.lines().filter { it.isNotBlank() })
+        }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+
     /**
      * 关闭/打开「在外接屏强制桌面模式」。
      *

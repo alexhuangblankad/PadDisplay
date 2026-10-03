@@ -1,64 +1,61 @@
-v0.2.0: 找到根因（Android 不把输入绑到外接屏）；实现输入路由让扩展真正可用
+v0.3.0: 两个桌面 + 屏幕左右关系（DisplayTopology）+ 输入路由
 
-## 用户实验定位到根因
+## 用户四个要求 vs Android 真实能力
 
-用户在设备上执行了系统自带的 am start --display 13，结果：外接屏满屏 4K 显示设置，完全正常。
+| 要求 | Android 能力 | 本版做法 |
+|---|---|---|
+| 决定两屏左右关系 | 有对应 API：IDisplayManager.setDisplayTopology | 已实现，先探测 + 读回验证 |
+| 鼠标拖拽跨屏 | 不是自由光标，但拓扑正是其机制 | 依赖前者；不可用则退化为设备绑定 |
+| 键盘在哪个屏就输到哪 | 键事件走焦点窗口，点哪块屏哪块屏获焦 | 无需额外处理；不绑键盘（绑定是静态的） |
+| 两个桌面 | 已由 am start --display 实验证明 | 一键双桌面 + 分屏开应用 |
 
-这把问题一分为二：
-- am start --display 13 外屏满屏 4K -> 外接屏独立渲染完全成立，Android 层面扩展可用
-- 鼠标到不了外接屏、设置页卡住无法操作 -> 输入没有绑到外接屏
-- ColorOS 默认给复制模式 -> 镜像时输入自动跟随，系统是在回避扩展模式的输入问题
+## 屏幕左右关系：找到了正确 API
 
-所以黑边和"只能用复制模式"不是分辨率问题，而是：
-Android 默认不把输入设备（触摸/鼠标/键盘）绑定到外接显示器。
-内屏触摸只对内屏生效、鼠标被限制在默认屏内，于是扩展模式下"看得见摸不着"，
-只能退回镜像。
+AOSP DisplayManagerService 中：
+    if (mFlags.isDisplayTopologyEnabled()) {
+        DisplayTopologyGraph graph = update.second;
+        mInputManagerInternal.setDisplayTopology(graph);   // 喂给输入系统
+    }
 
-## 本版实现：输入路由
+DisplayTopology 不只是画位置图 —— 它建立多屏统一坐标空间并驱动 InputManager，
+这正是 Android 里指针/输入跨屏的机制。所以"左右关系"和"光标跨屏"是同一件事。
 
-参照参考项目 android-display-extend 的 InputRouting 思路，三级回退：
-1. addUniqueIdAssociationByDescriptor(descriptor, displayUniqueId)
-2. addUniqueIdAssociationByPort(inputPort, displayUniqueId)
-3. addPortAssociation(inputPort, displayPort)
+必须探测，因为 flag 关闭时服务端：
+    getDisplayTopology() -> mDisplayTopologyCoordinator == null 时返回 null
+    setDisplayTopology() -> coordinator 为 null 时静默空操作，不报错
 
-但按 Android 16 的实际 AIDL 修正了方法名：参考项目用的
-addUniqueIdAssociation(String, String) / removeUniqueIdAssociation(String)
-在 API 36 的 IInputManager.aidl 里已经不存在（被 ...ByPort 取代），
-照抄会在该设备上直接失效。
+所以本版：先探测 -> 写入 -> getDisplayTopology() 读回验证，
+读回不一致就明确告知"本机关闭了该能力"，不给假的成功。
 
-事务号用真实 aidl.exe 编译同序骨架验证：
-  getInputDeviceIds = 3
-  getInputDevice = 2
-  addPortAssociation = 40
-  removePortAssociation = 41
-  addUniqueIdAssociationByDescriptor = 42
-  removeUniqueIdAssociationByDescriptor = 43
-  addUniqueIdAssociationByPort = 44
-  removeUniqueIdAssociationByPort = 45
+## 键盘为什么不绑
 
-显示器侧靠 DisplayInfo.uniqueId 与 DisplayInfo.address 的物理端口
-（该外屏是 port=21）关联。
+Android 输入设备关联是静态绑定（设备到屏幕），没有"键盘跟随焦点动态切换"。
+但键事件走焦点窗口：点哪块屏哪块屏获焦，键盘就往哪里输。
+所以正确做法是把鼠标绑到外屏、键盘不绑。
 
-InputDevice.getLocation() 是隐藏方法，已用反射读取。
+## 两个桌面
+
+- 一键建立双桌面：扩展模式 -> 点亮内屏 -> 把输入绑到外屏 -> 尝试设置左右关系
+- 在内屏开应用 / 在外屏开应用：分别把应用启动到指定桌面
+- 底层是系统自带的 am start --display <id>
 
 ## 新增界面
 
-- 绑定输入到外屏：把外接输入设备关联到外接屏
-- 解除绑定：恢复默认（输入跟随默认屏）
-- 查看输入设备列表：确认哪些设备是可绑定的外接设备（Location 非空）
+- 一键建立双桌面 / 在内屏开应用 / 在外屏开应用
+- 探测拓扑支持 / 外屏在左 / 外屏在右
+- 绑定输入到外屏 / 解除绑定 / 查看输入设备列表
 
-## 验证步骤
+## 新增文件
 
-1. 点「外屏开测试窗口」确认外屏能满屏 4K（此时鼠标应该还过不去）
-2. 点「绑定输入到外屏」
-3. 再试鼠标能不能移到外接屏、能不能操作外屏窗口
-
-若成功，就得到真正的扩展桌面：无黑边 4K + 可操作。
-若失败，把输入设备列表与事件日志发回，据此调整。
+- DisplayTopologyController.kt：DisplayTopology 的探测与左右布局设置
+  （getDisplayTopology=63、setDisplayTopology=64，真实 aidl.exe 验证）
+- InputRoutingController.kt：输入设备到显示器的绑定
+  （三级回退；按 API 36 实际 AIDL 修正方法名，参考项目用的
+   addUniqueIdAssociation/removeUniqueIdAssociation 在 API 36 已不存在）
 
 ## 诚实说明
 
-- 依然没有真机验证，输入路由是否在 ColorOS 上放行需要实测。
-- 输入绑定在部分设备上需要 INTERNAL_SYSTEM_WINDOW 或类似权限；
-  Shizuku 的 shell 身份通常够用，若被拦截报告里会写出。
-- 绑定是系统级状态，重插显示器或重启即恢复默认；本应用也提供解除绑定。
+- 依然没有真机验证。DisplayTopology 的构造涉及较多隐藏 API 反射，
+  是否在该 ROM 上可用需要实测。
+- 如果光标自由跨屏最终做不到，那是 Android 输入模型的限制，
+  会明确告知，而不是继续给"界面成功、现实没变化"的东西。

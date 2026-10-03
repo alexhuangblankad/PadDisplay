@@ -718,6 +718,79 @@ private fun MirrorFixCard(
                 enabled = ui.shizuku.canControl && !ui.busy,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("查看输入设备列表") }
+
+            // ---------------- 一键双桌面 ----------------
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "⑥ 两个桌面（当前阶段目标）",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "把内屏和外屏当作两个独立桌面：分别在不同屏幕启动应用、各自运行。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Button(
+                onClick = { vm.setupDualDesktop() },
+                enabled = ui.shizuku.canControl && !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("一键建立双桌面（扩展 + 绑输入 + 设左右）") }
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { vm.launchOnDesktop(MainViewModel.DesktopTarget.INTERNAL) },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("在内屏开应用") }
+                OutlinedButton(
+                    onClick = { vm.launchOnDesktop(MainViewModel.DesktopTarget.EXTERNAL) },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("在外屏开应用") }
+            }
+
+            // ---------------- 屏幕左右关系 ----------------
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "⑦ 屏幕左右关系（Android 13+ 的显示拓扑）",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "AOSP 在 feature flag 打开时会把显示拓扑**喂给输入系统**" +
+                    "（DisplayManagerService → mInputManagerInternal.setDisplayTopology），" +
+                    "这正是 Android 里「光标跨屏」的机制。\n\n" +
+                    "⚠️ flag 关闭时服务端 `setDisplayTopology` 是**静默空操作**，" +
+                    "所以必须先探测、并读回验证 —— 我不会盲报成功。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = { vm.probeTopology() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("探测是否支持") }
+                OutlinedButton(
+                    onClick = { vm.setScreenLayout(externalOnRight = true) },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("外屏在右") }
+                OutlinedButton(
+                    onClick = { vm.setScreenLayout(externalOnRight = false) },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("外屏在左") }
+            }
         }
     }
 }

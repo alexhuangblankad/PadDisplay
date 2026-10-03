@@ -117,6 +117,42 @@ interface IPadDisplayService {
     /** 解除所有输入关联，恢复默认（输入跟随默认屏）。 */
     String clearInputAssociations();
 
+    // ------------------------------------------------------------------
+    // 多屏拓扑（屏幕左右关系）—— Android 版的「Windows 显示布局」
+    //
+    // AOSP 在 feature flag 打开时会把拓扑喂给输入系统
+    // （DisplayManagerService → mInputManagerInternal.setDisplayTopology），
+    // 这正是光标/输入能够跨屏的机制。
+    // flag 关闭时服务端 setDisplayTopology 是静默空操作，所以必须读回验证。
+    // ------------------------------------------------------------------
+
+    /** 探测本机是否支持多屏拓扑。 */
+    String probeDisplayTopology();
+
+    /**
+     * 设置两块屏的左右关系。
+     * @param primaryDisplayId 作为坐标原点(0,0)的显示器
+     * @param otherDisplayId 另一块
+     * @param otherOnRight true = 另一块在右侧
+     */
+    String setDisplayTopologyLayout(
+        int primaryDisplayId,
+        int otherDisplayId,
+        boolean otherOnRight,
+        int primaryWidth,
+        int primaryHeight,
+        int otherWidth,
+        int otherHeight
+    );
+
+    /**
+     * 把某个应用（或系统设置）启动到指定桌面。
+     * @param displayId 目标显示器
+     * @param component 可为空（空则启动该包的主 Activity）
+     * @param packageName 当 component 为空时使用
+     */
+    String launchAppOnDisplay(int displayId, String component, String packageName);
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 

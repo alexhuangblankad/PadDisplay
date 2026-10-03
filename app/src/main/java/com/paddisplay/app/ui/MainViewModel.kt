@@ -372,6 +372,134 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 多屏拓扑（左右关系）
+    // ------------------------------------------------------------------
+
+    /** 探测本机是否支持 DisplayTopology（决定能否设置左右关系）。 */
+    fun probeTopology() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val text = systemService.probeDisplayTopology()
+            _ui.value = _ui.value.copy(
+                busy = false,
+                diagnostics = "=========== 多屏拓扑能力探测 ===========\n\n$text",
+                showDiagnostics = true,
+            )
+            appendLog("已探测多屏拓扑能力")
+        }
+    }
+
+    /**
+     * 设置两块屏的左右关系。
+     *
+     * @param externalOnRight true = 外接屏在右侧
+     */
+    fun setScreenLayout(externalOnRight: Boolean) {
+        viewModelScope.launch {
+            val internal = systemService.internalDisplay()
+            val external = systemService.primaryExternal()
+            if (internal == null || external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 需要内屏和外屏都在，才能设置左右关系")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            // 以**内屏为原点**，把外屏放到左/右
+            val r = systemService.setDisplayTopologyLayout(
+                primaryDisplayId = internal.displayId,
+                otherDisplayId = external.displayId,
+                otherOnRight = externalOnRight,
+                primarySize = internal.logicalWidth to internal.logicalHeight,
+                otherSize = external.logicalWidth to external.logicalHeight,
+            )
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("设置屏幕布局（外屏在${if (externalOnRight) "右" else "左"}）：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 两个桌面
+    // ------------------------------------------------------------------
+
+    /**
+     * 把一个应用启动到指定桌面。
+     *
+     * 这就是"两个桌面"的实现方式：内屏和外屏各自独立运行应用。
+     */
+    fun launchOnDesktop(target: DesktopTarget) {
+        viewModelScope.launch {
+            val displayId = when (target) {
+                DesktopTarget.INTERNAL -> systemService.internalDisplay()?.displayId
+                DesktopTarget.EXTERNAL -> systemService.primaryExternal()?.displayId
+            }
+            if (displayId == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 找不到目标显示器")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            // 用系统「设置」作为最稳妥的可启动目标
+            val r = systemService.launchAppOnDisplay(displayId, component = "com.android.settings/.Settings")
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("在${target.label}启动应用：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
+    /** 桌面目标。 */
+    enum class DesktopTarget(val label: String) {
+        INTERNAL("内屏桌面"),
+        EXTERNAL("外屏桌面"),
+    }
+
+    /**
+     * 一键建立"两个桌面"：先确保扩展模式，再把输入绑到外屏。
+     *
+     * 这是把前面几步串起来的一键操作。
+     */
+    fun setupDualDesktop() {
+        viewModelScope.launch {
+            val internal = systemService.internalDisplay()
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            val lines = mutableListOf<String>()
+
+            // 1) 确保外接屏是独立屏幕（扩展）
+            val ext = systemService.applyExtendMode(external.displayId)
+            lines += (if (ext.ok) "✅ " else "❌ ") + ext.title
+
+            // 2) 内屏保持点亮
+            if (_ui.value.internalTurnedOff) {
+                val on = systemService.restoreInternalDisplayWithRetry(attempts = 2)
+                hotplug.markInternalTurnedOff(!on.ok)
+                lines += (if (on.ok) "✅ " else "❌ ") + "内屏已点亮"
+            }
+
+            // 3) 把输入绑到外屏（这样才有第二个可操作的桌面）
+            val bind = systemService.bindInputToDisplay(external.displayId)
+            lines += (if (bind.ok) "✅ " else "❌ ") + bind.title
+
+            // 4) 尝试设置左右关系（不支持也不影响后续）
+            if (internal != null) {
+                val topo = systemService.setDisplayTopologyLayout(
+                    primaryDisplayId = internal.displayId,
+                    otherDisplayId = external.displayId,
+                    otherOnRight = true,
+                    primarySize = internal.logicalWidth to internal.logicalHeight,
+                    otherSize = external.logicalWidth to external.logicalHeight,
+                )
+                lines += (if (topo.ok) "✅ " else "⚠️ ") + topo.title
+            }
+
+            _ui.value = _ui.value.copy(busy = false, lastResult = lines.joinToString("\n"))
+            appendLog("一键建立双桌面：" + lines.joinToString(" / "))
+            delay(500)
+            refreshDisplays()
+        }
+    }
+
     fun refreshDisplays() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val overrides = settings.roleOverrides.first()

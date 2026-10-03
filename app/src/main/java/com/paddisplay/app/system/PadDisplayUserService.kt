@@ -469,6 +469,71 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         reports.forEach { appendLine(it.toText()) }
     })
 
+    // ------------------------------------------------------------------
+    // 多屏拓扑（左右关系）
+    // ------------------------------------------------------------------
+
+    private val topologyController: DisplayTopologyController by lazy {
+        DisplayTopologyController(displayService())
+    }
+
+    override fun probeDisplayTopology(): String = clean(topologyController.describe())
+
+    override fun setDisplayTopologyLayout(
+        primaryDisplayId: Int,
+        otherDisplayId: Int,
+        otherOnRight: Boolean,
+        primaryWidth: Int,
+        primaryHeight: Int,
+        otherWidth: Int,
+        otherHeight: Int,
+    ): String = clean(buildString {
+        appendLine("=== 设置多屏左右布局 ===")
+        appendLine("原点显示器 displayId=$primaryDisplayId (${primaryWidth}x$primaryHeight)")
+        appendLine("另一块 displayId=$otherDisplayId (${otherWidth}x$otherHeight) 放在" +
+            (if (otherOnRight) "右" else "左") + "侧")
+        appendLine()
+        val reports = topologyController.setHorizontalLayout(
+            primaryDisplayId = primaryDisplayId,
+            otherDisplayId = otherDisplayId,
+            otherOnRight = otherOnRight,
+            primarySize = primaryWidth to primaryHeight,
+            otherSize = otherWidth to otherHeight,
+        )
+        val ok = reports.any { it.channel == "读回验证" && it.ok }
+        appendLine("RESULT_OK=$ok")
+        appendLine()
+        reports.forEach { appendLine(it.toText()) }
+        if (!ok) {
+            appendLine()
+            appendLine("说明：本机的 DisplayTopology feature flag 很可能关闭，")
+            appendLine("服务端会静默忽略写入。这不是权限问题，是 ROM 未启用该能力。")
+        }
+    })
+
+    /**
+     * 把应用启动到指定桌面。
+     *
+     * `am start --display <id>` 是系统自带能力，用于实现"两个桌面"：
+     * 把应用分别启动到内屏和外接屏，各自独立运行。
+     */
+    override fun launchAppOnDisplay(displayId: Int, component: String, packageName: String): String =
+        clean(buildString {
+            appendLine("=== 把应用启动到 displayId=$displayId ===")
+            val cmd = when {
+                component.isNotBlank() -> "/system/bin/am start --display $displayId -n $component"
+                packageName.isNotBlank() -> "/system/bin/am start --display $displayId -p $packageName"
+                else -> "/system/bin/am start --display $displayId -a android.intent.action.MAIN -c android.intent.category.LAUNCHER"
+            }
+            appendLine("命令: $cmd")
+            appendLine()
+            val out = execRaw(cmd).trim()
+            appendLine(out.ifEmpty { "(空输出)" })
+            val ok = !out.contains("Error") && !out.contains("Exception") && out.isNotEmpty()
+            appendLine()
+            appendLine("RESULT_OK=$ok")
+        })
+
     /**
      * 在外接屏上真实启动一个 Activity（决定性测试）。
      *
