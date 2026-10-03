@@ -770,19 +770,40 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine("uid=${android.os.Process.myUid()}")
         appendLine()
 
-        appendLine("--- Global settings 当前值 ---")
+        appendLine("--- Global settings 当前值（shell: settings get global）---")
         desktopModeKeys.forEach { key ->
-            val v = runCatching {
-                android.provider.Settings.Global.getInt(resolver, key, -1)
-            }.getOrDefault(-999)
+            val (v, err) = shellGetGlobal(key)
             val label = when (v) {
-                1 -> "已开启"
-                0 -> "已关闭"
-                -1 -> "未设置（键不存在）"
-                else -> "读不到($v)"
+                "1" -> "已开启"
+                "0" -> "已关闭"
+                null -> "键不存在 / 读取失败"
+                else -> "其它值"
             }
-            appendLine("  $key = $v  ($label)")
+            appendLine("  $key = ${v ?: "(无)"}  ($label)")
+            if (err.isNotEmpty()) appendLine("      $err")
         }
+        appendLine()
+
+        // 关键诊断：全量 dump 后搜关键词，判断该键是否真的存在于系统注册表
+        appendLine("--- 关键诊断：settings list global 里搜 desktop / freeform / multi_window ---")
+        val dump = execRaw("/system/bin/settings list global")
+        appendLine("  (settings list global 输出 ${dump.length} 字符)")
+        val hits = dump.lines().filter { line ->
+            listOf("desktop", "freeform", "multi_window", "resizable", "force_desktop")
+                .any { line.contains(it, ignoreCase = true) }
+        }
+        if (hits.isEmpty()) {
+            appendLine("  ❌ 一个都没搜到 —— 说明这些键在 ColorOS 的 SettingsProvider 里**根本未注册**")
+            appendLine("     （不是权限问题，是 ROM 移除了这些开发者选项）")
+        } else {
+            appendLine("  搜到 ${hits.size} 条：")
+            hits.forEach { appendLine("    $it") }
+        }
+        appendLine()
+        appendLine("--- settings 命令本身是否可用 ---")
+        appendLine("  which settings: " + execRaw("which settings").trim().ifEmpty { "(未找到)" })
+        appendLine("  settings --help 前 3 行: " +
+            execRaw("/system/bin/settings --help").lines().take(3).joinToString(" / ").take(200))
         appendLine()
 
         appendLine("--- 系统能力（编译期，不可改）---")
@@ -815,44 +836,76 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine("  更不解决「指针跨两块屏」—— 后者需要 DisplayTopology（本机被关闭）。")
     })
 
-    override fun setDesktopMode(enable: Boolean): String = clean(buildString {
-        val ctx = injectedContext
-        val resolver = ctx?.contentResolver
-        if (resolver == null) {
-            appendLine("RESULT_OK=false")
-            appendLine("拿不到 ContentResolver")
-            return@buildString
+    /**
+     * 读一个 Global 设置（走 shell `settings get`，与 adb 同一条路）。
+     *
+     * 为什么不再用 ContentResolver：ContentResolver 读缺失的键只会返回默认值，
+     * 而写入抛出的 SecurityException 被我们自己吞掉了，导致 -999 -> -999
+     * 这种没有信息量的输出。改用 shell 命令后，成败与 stderr 都看得见。
+     */
+    private fun shellGetGlobal(key: String): Pair<String?, String> {
+        val out = execRaw("/system/bin/settings get global $key")
+        val trimmed = out.trim()
+        val err = if (trimmed.isEmpty() || trimmed.equals("null", true)) {
+            "键不存在或读取失败（输出：${if (trimmed.isEmpty()) "(空)" else trimmed}）"
+        } else {
+            ""
         }
+        return (trimmed.ifEmpty { null }) to err
+    }
+
+    /** 写一个 Global 设置。返回 (成功, 详情)。 */
+    private fun shellPutGlobal(key: String, value: Int): Triple<Boolean, String, String> {
+        val cmd = "/system/bin/settings put global $key $value"
+        val out = execRaw(cmd).trim()
+        // 写回验证
+        val now = execRaw("/system/bin/settings get global $key").trim()
+        val ok = now == value.toString()
+        val detail = buildString {
+            append("命令: $cmd")
+            append(" | 输出: ${if (out.isEmpty()) "(空)" else out.take(200)}")
+            append(" | 读回: ${if (now.isEmpty()) "(空)" else now}")
+        }
+        return Triple(ok, detail, if (ok) "" else "写入后读回不匹配")
+    }
+
+    override fun setDesktopMode(enable: Boolean): String = clean(buildString {
         val want = if (enable) 1 else 0
         appendLine("=== ${if (enable) "开启" else "关闭"}桌面模式相关设置 ===")
         appendLine("uid=${android.os.Process.myUid()}")
         appendLine()
+        appendLine("说明：本方法走 shell `settings put global`（等同 adb shell settings put），")
+        appendLine("不再用 ContentResolver —— 后者会把异常吞掉，导致看不到失败原因。")
+        appendLine()
+
         var allOk = true
         desktopModeKeys.forEach { key ->
-            val old = runCatching {
-                android.provider.Settings.Global.getInt(resolver, key, -1)
-            }.getOrDefault(-999)
-            val wrote = runCatching {
-                android.provider.Settings.Global.putInt(resolver, key, want)
-            }.getOrDefault(false)
-            val now = runCatching {
-                android.provider.Settings.Global.getInt(resolver, key, -1)
-            }.getOrDefault(-999)
-            val ok = wrote && now == want
+            val (before, beforeErr) = shellGetGlobal(key)
+            val (ok, detail, why) = shellPutGlobal(key, want)
+            val (after, _) = shellGetGlobal(key)
             if (!ok) allOk = false
-            appendLine("  ${if (ok) "✅" else "❌"} $key: $old -> $now (写入返回 $wrote)")
+            appendLine("${if (ok) "✅" else "❌"} $key")
+            appendLine("    写入前: ${before ?: "(无)"}${if (beforeErr.isNotEmpty()) "  ← $beforeErr" else ""}")
+            appendLine("    $detail")
+            appendLine("    写入后: ${after ?: "(无)"}")
+            if (why.isNotEmpty()) appendLine("    失败原因: $why")
         }
         appendLine()
         appendLine("RESULT_OK=$allOk")
+        appendLine()
         if (allOk) {
+            appendLine("已写入。WMS 的 SettingsObserver 会实时响应这些键，")
+            appendLine("但桌面形态需要**重新插拔外接屏或重启**才会重新计算。")
             appendLine()
-            appendLine("已写入。WMS 的 SettingsObserver 会实时响应这两个键，")
-            appendLine("但**桌面形态通常需要重新插拔外接屏或重启**才会完全生效。")
-            appendLine()
-            appendLine("建议顺序：先点「一键还原」清掉旧状态 → 再回来开启 → 重新插拔外接屏。")
+            appendLine("下一步：重新插拔外接屏 → 再用 MouseFlow 探测原生指针所在屏。")
         } else {
+            appendLine("写入失败。请把上面每行的完整输出发回 —— ")
+            appendLine("特别是「命令」与「输出」两段，里面会有 settings 的真实报错")
+            appendLine("（例如 SecurityException / BadUser / unknown setting）。")
             appendLine()
-            appendLine("部分写入失败，可能是 ColorOS 限制了该键（READ_ONLY 或未定义）。")
+            appendLine("注意：如果报错是 unknown setting，说明 ColorOS 移除了该键的注册表项；")
+            appendLine("若是 SecurityException，说明被 READ_ONLY 或权限策略挡住。")
+            appendLine("两者都意味着这条路在 ColorOS 上被厂商关闭，需要另想办法。")
         }
     })
 
