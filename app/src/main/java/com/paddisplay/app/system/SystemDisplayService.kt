@@ -67,6 +67,9 @@ class SystemDisplayService(
 
     fun primaryExternal(): DisplaySnapshot? = repo.primaryExternalDisplay()
 
+    /** 按 displayId 取快照。 */
+    fun byId(displayId: Int): DisplaySnapshot? = repo.byId(displayId)
+
     // ------------------------------------------------------------------
     // 特权调用：统一走 Shizuku
     // ------------------------------------------------------------------
@@ -609,6 +612,37 @@ class SystemDisplayService(
             OpResult(ok, if (ok) "已启动到桌面 $displayId" else "启动失败", out.lines().filter { it.isNotBlank() })
         }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
     }
+
+    // ------------------------------------------------------------------
+    // 坐标空间（光标错位排查）
+    // ------------------------------------------------------------------
+
+    /**
+     * 对照列出各屏的「注入坐标空间」。
+     *
+     * 这是定位「光标显示位置与实际点击位置不一致」的关键：
+     * 注入坐标必须用 `dumpsys window displays` 的 `cur=WxH`，
+     * 而不是被应用兼容缩放污染的 `Display.getRealSize()/getMetrics()`。
+     */
+    suspend fun probeCoordinateSpaces(displayIds: List<Int>): String = withContext(Dispatchers.IO) {
+        val csv = displayIds.joinToString(",")
+        service()?.let {
+            runCatching { it.probeCoordinateSpaces(csv) }
+                .getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /** 在指定屏的坐标空间里注入一次点击（用于验证坐标是否正确）。 */
+    suspend fun injectTapOnDisplay(displayId: Int, x: Int, y: Int): OpResult =
+        withContext(Dispatchers.IO) {
+            val (svc, err) = requireService()
+            if (svc == null) return@withContext err!!
+            runCatching {
+                val out = svc.injectTapOnDisplay(displayId, x, y)
+                val ok = out.contains("RESULT_OK=true")
+                OpResult(ok, if (ok) "已注入点击" else "注入失败", out.lines().filter { it.isNotBlank() })
+            }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+        }
 
     /**
      * 关闭/打开「在外接屏强制桌面模式」。

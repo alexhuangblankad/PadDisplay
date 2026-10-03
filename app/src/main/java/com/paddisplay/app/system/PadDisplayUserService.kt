@@ -541,6 +541,45 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
             appendLine("RESULT_OK=$ok")
         })
 
+    // ------------------------------------------------------------------
+    // 坐标空间（光标错位排查）
+    // ------------------------------------------------------------------
+
+    private val coordProbe: CoordinateSpaceProbe by lazy { CoordinateSpaceProbe(::execRaw) }
+
+    override fun probeCoordinateSpaces(displayIdsCsv: String): String = clean(buildString {
+        val ids = displayIdsCsv.split(",").mapNotNull { it.trim().toIntOrNull() }
+        appendLine(coordProbe.describe(if (ids.isEmpty()) listOf(0) else ids))
+        appendLine()
+        appendLine("--- Display API 读数（仅供对照，已被应用缩放污染）---")
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        (if (ids.isEmpty()) listOf(0) else ids).forEach { id ->
+            val d = dm?.getDisplay(id)
+            if (d == null) {
+                appendLine("  displayId=$id: (取不到)")
+            } else {
+                val p = android.graphics.Point()
+                val m = android.util.DisplayMetrics()
+                runCatching { d.getRealSize(p) }
+                runCatching { d.getMetrics(m) }
+                appendLine(
+                    "  displayId=$id getRealSize=${p.x}x${p.y} getMetrics=${m.widthPixels}x${m.heightPixels} " +
+                        "density=${m.densityDpi}",
+                )
+            }
+        }
+    })
+
+    override fun injectTapOnDisplay(displayId: Int, x: Int, y: Int): String = clean(buildString {
+        appendLine("=== 在 displayId=$displayId 注入点击 ($x, $y) ===")
+        val (ok, detail) = coordProbe.tap(displayId, x, y)
+        appendLine("RESULT_OK=$ok")
+        appendLine(detail)
+        appendLine()
+        appendLine("说明：注入坐标必须用「dumpsys window displays 的 cur=WxH」那套空间，")
+        appendLine("不能用 Display.getRealSize()/getMetrics()（会被应用兼容缩放污染）。")
+    })
+
     /**
      * 在外接屏上真实启动一个 Activity（决定性测试）。
      *

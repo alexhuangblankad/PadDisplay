@@ -153,6 +153,22 @@ interface IPadDisplayService {
      */
     String launchAppOnDisplay(int displayId, String component, String packageName);
 
+    // ------------------------------------------------------------------
+    // 坐标空间（解决「光标显示位置与实际点击位置不一致」）
+    //
+    // 参考项目 AdaptiveScreenPlus 的实测结论：
+    //   Display.getRealSize()/getMetrics() 会被本应用的「兼容缩放」污染
+    //   （内屏实际 1920x1080 被报成 1496x1242，导致右侧 424px 够不到）。
+    // 唯一可靠的注入坐标空间是 `dumpsys window displays` 里那块屏的 cur=WxH，
+    // 它与 `input -d N` / screencap 是同一套坐标系。
+    // ------------------------------------------------------------------
+
+    /** 对照列出各屏的「注入坐标空间」，用于定位光标错位。 */
+    String probeCoordinateSpaces(String displayIdsCsv);
+
+    /** 在指定屏的坐标空间里注入一次点击（自动夹取到有效范围）。 */
+    String injectTapOnDisplay(int displayId, int x, int y);
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 

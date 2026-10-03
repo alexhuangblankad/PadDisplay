@@ -791,6 +791,40 @@ private fun MirrorFixCard(
                     modifier = Modifier.weight(1f),
                 ) { Text("外屏在左") }
             }
+
+            // ---------------- 光标错位 / 坐标空间 ----------------
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "⑧ 光标错位 / 坐标空间排查",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "参考项目 AdaptiveScreenPlus 的实测结论：`Display.getRealSize()` / " +
+                    "`getMetrics()` 会被本应用的「兼容缩放」污染 —— " +
+                    "内屏实际 1920×1080 被报成 1496×1242，于是光标被夹在 x≤1495、" +
+                    "右侧 424px 永远够不到，表现就是**光标与点击位置错位**。\n\n" +
+                    "唯一可靠的注入坐标空间是 `dumpsys window displays` 里那块屏的 `cur=WxH`，" +
+                    "它与 `input -d N` / screencap 同一套坐标系。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.probeCoordinateSpaces() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("⑧ 对照坐标空间") }
+                OutlinedButton(
+                    onClick = { vm.testInjectTap(MainViewModel.DesktopTarget.EXTERNAL) },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("外屏注入点击") }
+            }
         }
     }
 }

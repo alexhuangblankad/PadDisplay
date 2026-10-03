@@ -358,6 +358,54 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ------------------------------------------------------------------
+    // 光标错位排查（坐标空间）
+    // ------------------------------------------------------------------
+
+    /**
+     * 对照各屏的「注入坐标空间」。
+     *
+     * 参考项目 AdaptiveScreenPlus 实测：Display.getRealSize()/getMetrics()
+     * 会被本应用的**兼容缩放**污染（内屏 1920x1080 被报成 1496x1242，
+     * 导致右侧 424px 够不到、光标与点击错位）。
+     * 唯一可靠的注入空间是 `dumpsys window displays` 的 `cur=WxH`。
+     */
+    fun probeCoordinateSpaces() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val ids = _ui.value.displays.map { it.displayId }.ifEmpty { listOf(0) }
+            val text = systemService.probeCoordinateSpaces(ids)
+            _ui.value = _ui.value.copy(
+                busy = false,
+                diagnostics = "=========== 坐标空间对照 ===========\n\n$text",
+                showDiagnostics = true,
+            )
+            appendLog("已生成坐标空间对照（用于排查光标错位）")
+        }
+    }
+
+    /** 在指定屏注入一次点击，验证坐标空间是否正确。 */
+    fun testInjectTap(target: DesktopTarget) {
+        viewModelScope.launch {
+            val displayId = when (target) {
+                DesktopTarget.INTERNAL -> systemService.internalDisplay()?.displayId
+                DesktopTarget.EXTERNAL -> systemService.primaryExternal()?.displayId
+            }
+            if (displayId == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 找不到目标显示器")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            // 点到屏幕中心
+            val d = systemService.byId(displayId)
+            val cx = (d?.logicalWidth ?: 100) / 2
+            val cy = (d?.logicalHeight ?: 100) / 2
+            val r = systemService.injectTapOnDisplay(displayId, cx, cy)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("注入点击测试（${target.label} 中心 $cx,$cy）：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
     /** 列出输入设备（用来确认哪些设备是可绑定的外接设备）。 */
     fun listInputDevices() {
         viewModelScope.launch {

@@ -1,65 +1,53 @@
-v0.3.1: 读 Dextop 源码后的三处修正（输入绑定判定 / 拓扑事务号 / 键盘策略）
+v0.3.2: 光标错位的根因（坐标空间被应用缩放污染）+ 坐标空间对照工具
 
-## 探测结论
+## 根因类别定位
 
-DisplayTopology 类可用、TreeNode 类可用，但能力探测 supported=false：
-系统返回 null，说明该 feature flag 在本机关闭，服务端 setDisplayTopology 是静默空操作。
-这不是权限问题，是 ColorOS 未启用该能力，无法靠 App 绕过（要开需改系统 config，即 root）。
+参考项目 AdaptiveScreenPlus 的 CursorOverlay / ExtScreen 里踩透并写成了警告：
+- 范围必须从系统那一侧量，不能问 Display：display context 的
+  getResources().getDisplayMetrics() 会被本应用的兼容缩放污染 ——
+  实测内屏 1920x1080 被报成 1496x1242，光标被夹在 x<=1495，右侧 424px 够不到。
+- Display 的 getRealSize/getMetrics 会串应用缩放，getMode() 又不认 wm size 覆盖。
+- 系统只给真实鼠标（USB/uinput）画指针，应用侧注入的事件不会点亮它，
+  非 root 没有接口，只能自己挂应用悬浮窗当光标。
 
-## 参考项目 Dextop 源码纠错三处
+所以用户的现象是两类问题叠加：
+1. 坐标空间取错源：事件按一套空间算、光标按另一套画；两块屏尺度不同（内屏
+   2520x1680 / 外屏 3840x2160）误差被放大，表现为"飘逸"。
+2. 物理鼠标绑定让错位更明显：系统把指针画在默认屏，事件却被绑到外屏。
 
-视频里的项目是 NarYuki/Dextop（GPL-3.0）。它自称支持"跨显示器指针路由"与
-"鼠标键盘输入路由切换"，但对 ColorOS 的自评是"有限且不完整"。读源码后发现三处
-直接纠正我方实现的地方：
+## 本版改动
 
-### 1. 输入设备判定写错了（这是日志里绑定失败的真正原因）
+1. 新增「对照坐标空间」：解析 dumpsys window displays 里每块屏的 cur=WxH
+   （WindowManager 眼里的逻辑尺寸，已算上旋转与 wm size 覆盖，
+   与 input -d N tap x y / screencap 同一套坐标系），
+   并把 Display.getRealSize()/getMetrics() 的读数并排显示以暴露污染。
+2. 新增「外屏注入点击」：按 cur=WxH 空间注入点击，坐标自动夹取并告知是否夹取。
+3. 新增 CoordinateSpaceProbe.kt 实现上述解析与注入。
 
-Dextop 的 PhysicalDeviceRouting.eligibleDevices 用：
-    device.id >= 0 && device.isExternal && device.descriptor.isNotBlank() && ...
-InputDevice.isExternal() 是公共 API。而我用反射读 getLocation() 是否非空 —
-在该 ROM 上返回空，于是 6 个输入设备全被过滤，报"没有可绑定的外接输入设备"。
+## 三个参考项目的结论
 
-现改为 isExternal + 鼠标/键盘类型筛选，并把不符合条件的设备全部列出，
-便于判断是"没有外接设备"还是筛选条件不对。
-另外用 InputDevice.getAssociatedDisplayId() 做读回验证（Dextop 用它判断绑定是否生效），
-不再只看写入是否报错。
+- connect-screen：从 android-display-extend 派生，用虚拟显示器（非物理便携屏）。
+- SmartDock DFC：前置桌面 + 强制桌面模式，提供桌面外观但不解决输入坐标。
+- AdaptiveScreenPlus：自挂光标浮层 + 注入事件到目标屏，坐标取自
+  dumpsys window displays —— 这才是正确架构。
 
-### 2. 拓扑事务号不该硬编码
+结论：非 root 下要让第二块屏能用，不是去绑物理鼠标，而是自己画光标 + 自己注入事件。
 
-Dextop 源码明确警告：transaction ids 在不同 Android 版本与 OEM 分支间不稳定，
-新版本上旧的 id 可能指向 requestDisplayModes()（受 RESTRICT_DISPLAY_MODES 保护），
-Never use a numeric fallback。
+## 请先做这一步
 
-上一版用了硬编码 63/64，现改为从 IDisplayManager$Stub 读真实
-TRANSACTION_getDisplayTopology / TRANSACTION_setDisplayTopology 常量；
-读不到就判定不支持并明确报告，绝不退回数字。
+先点「解除绑定」清掉鼠标绑定（鼠标飘逸应该是它引起的），再看坐标空间对照输出。
 
-### 3. 键盘不该绑定
+## 下一步需要的数据
 
-Dextop 把鼠标与键盘分开控制（mouse/keyboard 两个参数）。原因是 Android 的设备关联
-是静态的：把键盘绑到外屏后它只往外屏送键事件。
-所以本版默认只绑鼠标、不绑键盘；键事件走焦点窗口，
-两块屏按焦点各自接收键盘输入，更接近"选哪个屏就在哪里输入"。
+1. 解除绑定后鼠标飘逸是否消失
+2. 坐标空间对照输出（两块屏的 cur=WxH）
+3. 输入设备列表里 external=true 的设备
 
-## 能力边界（如实）
-
-- 两个桌面：系统层面成立（用户已用 am start --display 验证满屏 4K）
-- 鼠标能否操作外屏：修正了判定逻辑，是否放行需实测
-- 键盘跟焦点：按上述策略处理，需实测
-- 屏幕左右关系 / 鼠标自由跨屏拖拽：依赖 DisplayTopology，本机被 ROM 关闭，无法实现
-
-### 新增文件
-
-- InputRoutingController.kt 重构：isExternal 判定、读回验证、鼠标/键盘分离
-- DisplayTopologyController.kt：事务号动态解析、去掉硬编码与强制解包
-
-## 验证步骤
-
-1. 查看输入设备列表，重点看有没有 external=true 的设备、是鼠标还是键盘
-2. 绑定输入到外屏，看三级回退结果 + 读回验证那行
-3. 把探测拓扑的完整输出发回
+拿到 cur=WxH 即可判断是坐标空间取错，还是 ColorOS 的指针绘制与输入空间本就分离。
+若是后者，按 AdaptiveScreenPlus 的路子做「自绘光标 + 注入」的触控板，不再碰物理绑定。
 
 ## 说明
 
-依然没有真机验证。若输入绑定仍不生效，会明确告知"这条路在 ColorOS 上不通"，
-并转向只做两个桌面（不追求鼠标跨屏）。
+- 依然没有真机验证。
+- 本版没有自动解除绑定，因为无法确定绑定是否为飘逸成因，需用户先手动验证一次，
+  避免再次"猜着改"。
