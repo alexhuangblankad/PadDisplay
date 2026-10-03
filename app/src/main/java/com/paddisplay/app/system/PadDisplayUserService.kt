@@ -80,11 +80,31 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     private fun displayService(): IBinder? = systemService("display")
     private fun windowService(): IBinder? = systemService("window")
 
-    override fun execCommand(command: String): String {
+    override fun execCommand(command: String): String = execRaw(command)
+
+    /**
+     * 执行 shell 命令。
+     *
+     * ⚠️ 关键修复：`wm` / `dumpsys` 是 `/system/bin` 下的可执行文件，
+     * 但 Shizuku UserService 进程的 PATH **不一定包含** `/system/bin`。
+     * 早先直接用 `sh -c "wm size -d N"`，命令可能静默失败（exit 127 / 无输出），
+     * 于是 `readDisplaySize` 拿到空字符串，分辨率相关的快照与回滚全部失效。
+     *
+     * 现在显式把 PATH 补全，并**返回退出码与非零退出时的提示**，
+     * 不再让失败伪装成"空输出"。
+     */
+    private fun execRaw(command: String): String {
         return try {
-            val process = ProcessBuilder("sh", "-c", command)
-                .redirectErrorStream(true)
-                .start()
+            val pb = ProcessBuilder("sh", "-c", command).redirectErrorStream(true)
+            // 显式补全 PATH，覆盖 UserService 进程 PATH 缺失的情况
+            val env = pb.environment()
+            val path = env["PATH"] ?: ""
+            val extra = "/system/bin:/system/xbin:/vendor/bin:/product/bin"
+            if (!path.contains("/system/bin")) {
+                env["PATH"] = if (path.isEmpty()) extra else "$extra:$path"
+            }
+            val process = pb.start()
+
             val sb = StringBuilder()
             BufferedReader(InputStreamReader(process.inputStream)).use { reader ->
                 val buf = CharArray(4096)
@@ -94,8 +114,13 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
                     sb.append(buf, 0, n)
                 }
             }
-            process.waitFor()
-            val out = sb.toString()
+            val code = process.waitFor()
+            var out = sb.toString()
+            if (code != 0 && out.isBlank()) {
+                out = "[exit=$code, 无输出] 命令可能不存在或没有权限: $command"
+            } else if (code != 0) {
+                out = "$out\n[exit=$code]"
+            }
             if (out.length > 200_000) out.substring(0, 200_000) + "\n...(输出已截断)" else out
         } catch (t: Throwable) {
             "execCommand 失败: ${Reflect.describe(t)}"
@@ -260,14 +285,63 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         })
     }
 
-    override fun getDisplaySizes(displayId: Int): String = buildString {
+    override fun getDisplaySizes(displayId: Int): String = clean(buildString {
         appendLine("displayId=$displayId")
         appendLine("wm size -d $displayId:")
         appendLine(resolutionController.readDisplaySize(displayId).text)
         appendLine()
         appendLine("getBaseDisplaySize (IWindowManager): ${resolutionController.readBaseDisplaySize(displayId) ?: "(读取失败)"}")
         appendLine("getInitialDisplaySize (IWindowManager): ${resolutionController.readInitialDisplaySize(displayId) ?: "(读取失败)"}")
-    }
+    })
+
+    /**
+     * 读回真实 Mode 状态。
+     *
+     * 这是判定「分辨率到底改没改」的唯一依据：
+     * `setUserPreferredDisplayMode` 返回成功只说明没报错，**不代表时序变了**。
+     * 早先版本只看调用是否抛异常，所以无法发现"请求被接受但实际没生效"。
+     */
+    override fun getModeState(displayId: Int): String = clean(buildString {
+        appendLine("=== displayId=$displayId 的 Mode 状态 ===")
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        val display = dm?.getDisplay(displayId)
+        if (display == null) {
+            appendLine("拿不到该 Display（可能已被系统移出枚举）")
+        } else {
+            val m = display.mode
+            appendLine(
+                "当前实际 Mode: " +
+                    (m?.let { "${it.physicalWidth}x${it.physicalHeight}@${it.refreshRate}" } ?: "?") +
+                    " (modeId=${m?.modeId})",
+            )
+            appendLine("supportedModes 数量: ${display.supportedModes?.size ?: 0}")
+            display.supportedModes?.forEach {
+                appendLine("  modeId=${it.modeId} ${it.physicalWidth}x${it.physicalHeight}@${it.refreshRate}")
+            }
+        }
+        appendLine()
+        appendLine("用户首选 Mode: " + (resolutionController.readUserPreferredMode(displayId) ?: "(读不到)"))
+        appendLine("系统首选 Mode: " + (resolutionController.readSystemPreferredMode(displayId) ?: "(读不到)"))
+    })
+
+    /** 诊断 shell 环境：确认 wm / dumpsys 真的能跑（带绝对路径对照）。 */
+    override fun probeShellEnvironment(): String = clean(buildString {
+        appendLine("=== shell 环境自检 ===")
+        appendLine("PATH = ${System.getenv("PATH")}")
+        appendLine()
+        for (cmd in listOf(
+            "which wm",
+            "which dumpsys",
+            "/system/bin/wm size",
+            "/system/bin/wm size -d 0",
+            "wm size -d 0",
+            "/system/bin/dumpsys display | head -n 3",
+        )) {
+            appendLine("--- $cmd ---")
+            appendLine(execRaw(cmd).trim().ifEmpty { "(空输出)" })
+            appendLine()
+        }
+    })
 
     override fun setUserPreferredDisplayMode(
         displayId: Int,

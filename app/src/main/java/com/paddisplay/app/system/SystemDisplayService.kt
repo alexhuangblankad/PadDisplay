@@ -455,6 +455,26 @@ class SystemDisplayService(
     }
 
     /**
+     * Mode 自检：当前实际 Mode、可选 Mode 列表、用户/系统首选 Mode。
+     *
+     * 这是判断「分辨率到底能不能改、改了有没有生效」的唯一权威依据。
+     */
+    suspend fun modeState(externalDisplayId: Int): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.getModeState(externalDisplayId) }
+                .getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /** shell 环境自检（确认 wm / dumpsys 是否真的可用）。 */
+    suspend fun probeShellEnvironment(): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.probeShellEnvironment() }
+                .getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /**
      * 读外接屏真实的 windowingMode（"扩展/复制"的权威判据）。
      *
      * 审计 F15：不要拿"内外屏尺寸相同"去猜镜像 —— 外屏恰好和内屏同分辨率时会被误判。

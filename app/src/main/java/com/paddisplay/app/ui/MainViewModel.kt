@@ -207,6 +207,44 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // 枚举
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // 分辨率 / Mode 自检
+    // ------------------------------------------------------------------
+
+    /** 一键采集"当前 Mode / 可选 Mode / 首选 Mode / shell 环境"，用于定位分辨率问题。 */
+    fun runModeSelfCheck() {
+        viewModelScope.launch {
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器，无法自检")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            val sb = StringBuilder()
+            sb.appendLine("=========== Mode 自检 ===========")
+            sb.appendLine("外接屏 displayId = ${external.displayId}（${external.name}）")
+            sb.appendLine("App 侧看到的当前 Mode = ${external.currentModeLabel}")
+            sb.appendLine("App 侧看到的 supportedModes 数量 = ${external.supportedModes.size}")
+            sb.appendLine("App 侧可选分辨率 = " + external.distinctResolutions.joinToString { "${it.first}×${it.second}" })
+            sb.appendLine("物理屏 ID = ${external.physicalDisplayId}，token 可用 = ${external.physicalTokenAvailable}")
+            sb.appendLine()
+            sb.appendLine("--- UserService 侧读回 ---")
+            sb.appendLine(systemService.modeState(external.displayId))
+            sb.appendLine()
+            sb.appendLine("--- shell 环境 ---")
+            sb.appendLine(systemService.probeShellEnvironment())
+            sb.appendLine()
+            sb.appendLine("--- 当前逻辑尺寸 ---")
+            sb.appendLine(runCatching { systemService.execCommand("wm size -d ${external.displayId}") }.getOrElse { "失败: ${it.message}" })
+            _ui.value = _ui.value.copy(
+                busy = false,
+                diagnostics = sb.toString(),
+                showDiagnostics = true,
+            )
+            appendLog("已生成 Mode 自检报告")
+        }
+    }
+
     fun refreshDisplays() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val overrides = settings.roleOverrides.first()
@@ -505,25 +543,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * 应用外屏分辨率，并启动防黑屏倒计时（任务书第 9 节）。
      *
-     * 流程：快照 → 应用 → 弹倒计时 → 用户不确认就回滚。
+     * @param explicitTarget 指定目标 Mode；为 null 时按当前 UI 选择解析。
+     *   （修掉一个竞态：早先 `applyBestResolution()` 先改状态再立刻读状态，
+     *    可能读到旧值，导致"最佳分辨率"实际没被应用。）
      */
-    fun applyResolution() {
+    fun applyResolution(explicitTarget: DisplayModeInfo? = null) {
         viewModelScope.launch {
             val external = systemService.primaryExternal()
             if (external == null) {
                 _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器")
                 return@launch
             }
-            val target = resolveTargetMode()
+            val target = explicitTarget ?: resolveTargetMode()
             if (target == null) {
                 _ui.value = _ui.value.copy(lastResult = "❌ 无法解析目标 Mode（该分辨率可能不被支持）")
                 return@launch
             }
 
+            // 目标与当前完全相同就明确告知，不再做一次无意义的"切换"（避免被误读为失败）
+            val current = external.currentMode
+            if (DisplayModeSelector.isSameMode(target, current)) {
+                appendLog("外接屏当前已经是 ${target.label}，无需切换")
+                _ui.value = _ui.value.copy(
+                    lastResult = "✅ 外接屏已经是 ${target.label}，无需切换。\n" +
+                        "提示：若要验证能否切换，请在上方列表中选择**另一个**分辨率。",
+                )
+                return@launch
+            }
+
             val allowFallback = settings.useForcedSizeFallback.first()
 
-            // 快照：切换前的「真实 Mode」与「逻辑尺寸」，两者都要，才能完整回滚。
-            val beforeMode = external.currentMode
+            // 快照：切换前的「真实 Mode」与「逻辑尺寸」，两者都要，才能完整回滚
+            val beforeMode = current
             val beforeSize = systemService.captureExternalSize(external.displayId)
             appendLog(
                 "准备切换外屏到 ${target.label}（切换前 mode=${beforeMode?.label ?: "未知"}, " +
@@ -535,7 +586,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             _ui.value = _ui.value.copy(busy = false, lastResult = result.toText())
             appendLog(result.toText().replace("\n", " / "))
 
-            // 统一的回滚动作：先恢复真实 Mode，再恢复逻辑尺寸。
+            // 统一的回滚动作：先把真实 Mode 切回去，再恢复逻辑尺寸。
             // 只恢复尺寸是不够的 —— 如果真实 Mode 切到了显示器不支持的时序，
             // 外屏会一直黑屏，必须把 Mode 也切回去。
             suspend fun rollback(tag: String) {
@@ -556,7 +607,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             }
 
             if (!result.ok) {
-                // 失败立即回滚，不必等倒计时
                 rollback("切换失败，立即回滚")
                 return@launch
             }
@@ -573,6 +623,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 },
                 onRollback = { rollback("⏱ 超时未确认") },
             )
+        }
+    }
+
+    /** 一键使用最佳分辨率（把目标显式传下去，避免状态竞态）。 */
+    fun applyBestResolution() {
+        viewModelScope.launch {
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器")
+                return@launch
+            }
+            val best = DisplayModeSelector.selectBest(external)
+            if (best == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 外接屏未上报 supportedModes")
+                return@launch
+            }
+            selectMode(best)
+            applyResolution(explicitTarget = best)
         }
     }
 
@@ -612,24 +680,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val pending = _ui.value.pendingConfirm ?: return
         _ui.value = _ui.value.copy(pendingConfirm = null)
         viewModelScope.launch { pending.onRollback() }
-    }
-
-    /** 一键使用最佳分辨率。 */
-    fun applyBestResolution() {
-        viewModelScope.launch {
-            val external = systemService.primaryExternal()
-            if (external == null) {
-                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器")
-                return@launch
-            }
-            val best = DisplayModeSelector.selectBest(external)
-            if (best == null) {
-                _ui.value = _ui.value.copy(lastResult = "❌ 外接屏未上报 supportedModes")
-                return@launch
-            }
-            selectMode(best)
-            applyResolution()
-        }
     }
 
     fun clearForcedSize() {

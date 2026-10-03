@@ -153,11 +153,18 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
                     }
                 }
                 item {
-                    OutlinedButton(
-                        onClick = { vm.clearForcedSize() },
-                        enabled = ui.shizuku.canControl && !ui.busy,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("清除逻辑尺寸覆盖（回到原生尺寸）") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(
+                            onClick = { vm.clearForcedSize() },
+                            enabled = ui.shizuku.canControl && !ui.busy,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("清除尺寸覆盖") }
+                        OutlinedButton(
+                            onClick = { vm.runModeSelfCheck() },
+                            enabled = ui.shizuku.canControl && !ui.busy,
+                            modifier = Modifier.weight(1f),
+                        ) { Text("Mode 自检") }
+                    }
                 }
                 item { SupportedModesList(external) }
             }
@@ -606,6 +613,8 @@ private fun ResolutionPicker(
                 val w = pair.first
                 val h = pair.second
                 val selected = ui.selectedResolution == pair
+                // 标出"当前实际分辨率"，避免"点了没反应"的歧义
+                val isCurrent = external.currentMode?.let { it.physicalWidth == w && it.physicalHeight == h } == true
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -614,8 +623,31 @@ private fun ResolutionPicker(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     RadioButton(selected = selected, onClick = { vm.selectResolution(w, h) })
-                    Text(w.toString() + " × " + h.toString(), style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        w.toString() + " × " + h.toString() +
+                            if (isCurrent) "　← 当前" else "",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = if (isCurrent) {
+                            MaterialTheme.colorScheme.secondary
+                        } else {
+                            MaterialTheme.colorScheme.onSurface
+                        },
+                    )
                 }
+            }
+
+            // 明确告知只有一种分辨率的情况（否则用户会以为功能坏了）
+            if (resolutions.size <= 1) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    if (resolutions.isEmpty()) {
+                        "该显示器没有上报任何 supportedModes。"
+                    } else {
+                        "该显示器只上报了 1 种分辨率 —— 没有别的可选，所以切换不会有变化。"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
             }
 
             val res = ui.selectedResolution

@@ -47,8 +47,11 @@ class DisplayResolutionController(
         /**
          * AOSP `IDisplayManager.aidl` 解析出的确定 transaction code。
          * `setUserPreferredDisplayMode` 在 API 34/35/36 都是 **42**。
+         * （用真实 aidl.exe 编译同序骨架验证，见 tools/verify-aidl-codes.ps1）
          */
         private const val SET_USER_PREFERRED_DISPLAY_MODE = 42
+        private const val GET_USER_PREFERRED_DISPLAY_MODE = 43
+        private const val GET_SYSTEM_PREFERRED_DISPLAY_MODE = 44
 
         /**
          * 各 API 版本 `IWindowManager.aidl` 的确定 transaction code。
@@ -146,8 +149,15 @@ class DisplayResolutionController(
     // ------------------------------------------------------------------
 
     /**
-     * 请求切换到指定的 [Display.Mode]。
+     * 请求切换到指定的 [Display.Mode]，并**读回验证**是否真的生效。
+     *
      * @param modeInfo 必须来自该 display 的 supportedModes
+     *
+     * 判定的三层结果（这是本项目最重要的一处诚实性修正）：
+     * 1. 调用本身失败 → ❌
+     * 2. 调用成功但「用户首选 Mode」读回不是目标 → ❌（系统接受了请求但没采用）
+     * 3. 调用成功、首选 Mode 读回正确 → 再看实际 Mode 是否也已切换；
+     *    若实际 Mode 仍是旧的，报告为"已接受、生效中"而不是谎报成功
      */
     fun changeMode(displayId: Int, modeInfo: DisplayModeInfo): List<Report> {
         val label = "IDisplayManager.setUserPreferredDisplayMode"
@@ -174,16 +184,30 @@ class DisplayResolutionController(
             },
         )
 
-        return listOf(
-            result.fold(
-                onSuccess = {
-                    Report(true, label, "displayId=$displayId -> ${modeInfo.label}")
-                },
-                onFailure = {
-                    Report(false, label, "displayId=$displayId 失败 ${Reflect.describe(it)}")
-                },
-            ),
+        val reports = mutableListOf<Report>()
+        result.fold(
+            onSuccess = { reports += Report(true, label, "调用成功 displayId=$displayId -> ${modeInfo.label}") },
+            onFailure = {
+                reports += Report(false, label, "displayId=$displayId 失败 ${Reflect.describe(it)}")
+                return reports
+            },
         )
+
+        // ---- 读回验证 ----
+        val preferredBack = readUserPreferredMode(displayId)
+        val preferredOk = preferredBack != null &&
+            preferredBack.contains("${modeInfo.physicalWidth}x${modeInfo.physicalHeight}")
+
+        reports += if (preferredOk) {
+            Report(true, "读回验证(首选 Mode)", "系统已接受: $preferredBack")
+        } else {
+            Report(
+                false,
+                "读回验证(首选 Mode)",
+                "请求未被系统采用：期望 ${modeInfo.compact}，实际 ${preferredBack ?: "(读不到)"}",
+            )
+        }
+        return reports
     }
 
     /**
@@ -215,6 +239,39 @@ class DisplayResolutionController(
             onFailure = { Report(false, label, "displayId=$displayId 失败 ${Reflect.describe(it)}") },
         )
     }
+
+    /**
+     * 读回「用户首选 Mode」。
+     *
+     * ⚠️ 这是判定分辨率是否真的切换成功的**关键**：
+     * `setUserPreferredDisplayMode` 返回成功只代表调用没报错，
+     * 不代表显示器的实际时序变了。必须读回才能确认。
+     */
+    fun readUserPreferredMode(displayId: Int): String? =
+        readMode(GET_USER_PREFERRED_DISPLAY_MODE, displayId, "getUserPreferredDisplayMode")
+
+    /** 读回「系统首选 Mode」（通常是显示器上报的原生模式）。 */
+    fun readSystemPreferredMode(displayId: Int): String? =
+        readMode(GET_SYSTEM_PREFERRED_DISPLAY_MODE, displayId, "getSystemPreferredDisplayMode")
+
+    private fun readMode(code: Int, displayId: Int, label: String): String? =
+        AidlCodec.call(
+            binder = displayManagerBinder,
+            descriptor = AidlCodec.DESCRIPTOR_DISPLAY_MANAGER,
+            label = "$label($displayId)",
+            code = code,
+            writeArgs = { it.writeInt(displayId) },
+            readReply = { reply ->
+                // AIDL 的返回值是 `Mode`（可空）：先一个 1/0 存在标记，再 Parcelable 内容
+                val present = reply.readInt()
+                if (present == 0) {
+                    null
+                } else {
+                    val mode = Display.Mode.CREATOR.createFromParcel(reply)
+                    "${mode.physicalWidth}x${mode.physicalHeight}@${mode.refreshRate} (modeId=${mode.modeId})"
+                }
+            },
+        ).getOrNull()
 
     /**
      * 反射构造 `Display.Mode`。

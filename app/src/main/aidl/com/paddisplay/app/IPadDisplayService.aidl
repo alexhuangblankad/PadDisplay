@@ -37,6 +37,19 @@ interface IPadDisplayService {
     /** 通过 IWindowManager 读取 base / initial / override 尺寸。 */
     String getDisplaySizes(int displayId);
 
+    /**
+     * 读回某个显示器的真实 Mode 状态，用于**验证** Mode 切换是否真的生效。
+     *
+     * 这是必需的：`setUserPreferredDisplayMode` 调用返回成功只代表"没报错"，
+     * 不代表分辨率真的变了。必须读回当前实际 Mode 才能判定。
+     */
+    String getModeState(int displayId);
+
+    /**
+     * 直接执行 shell 命令（带绝对路径兜底），用于诊断 `wm` / `dumpsys` 是否可用。
+     */
+    String probeShellEnvironment();
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 
