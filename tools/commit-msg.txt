@@ -1,61 +1,65 @@
-v0.3.0: 两个桌面 + 屏幕左右关系（DisplayTopology）+ 输入路由
+v0.3.1: 读 Dextop 源码后的三处修正（输入绑定判定 / 拓扑事务号 / 键盘策略）
 
-## 用户四个要求 vs Android 真实能力
+## 探测结论
 
-| 要求 | Android 能力 | 本版做法 |
-|---|---|---|
-| 决定两屏左右关系 | 有对应 API：IDisplayManager.setDisplayTopology | 已实现，先探测 + 读回验证 |
-| 鼠标拖拽跨屏 | 不是自由光标，但拓扑正是其机制 | 依赖前者；不可用则退化为设备绑定 |
-| 键盘在哪个屏就输到哪 | 键事件走焦点窗口，点哪块屏哪块屏获焦 | 无需额外处理；不绑键盘（绑定是静态的） |
-| 两个桌面 | 已由 am start --display 实验证明 | 一键双桌面 + 分屏开应用 |
+DisplayTopology 类可用、TreeNode 类可用，但能力探测 supported=false：
+系统返回 null，说明该 feature flag 在本机关闭，服务端 setDisplayTopology 是静默空操作。
+这不是权限问题，是 ColorOS 未启用该能力，无法靠 App 绕过（要开需改系统 config，即 root）。
 
-## 屏幕左右关系：找到了正确 API
+## 参考项目 Dextop 源码纠错三处
 
-AOSP DisplayManagerService 中：
-    if (mFlags.isDisplayTopologyEnabled()) {
-        DisplayTopologyGraph graph = update.second;
-        mInputManagerInternal.setDisplayTopology(graph);   // 喂给输入系统
-    }
+视频里的项目是 NarYuki/Dextop（GPL-3.0）。它自称支持"跨显示器指针路由"与
+"鼠标键盘输入路由切换"，但对 ColorOS 的自评是"有限且不完整"。读源码后发现三处
+直接纠正我方实现的地方：
 
-DisplayTopology 不只是画位置图 —— 它建立多屏统一坐标空间并驱动 InputManager，
-这正是 Android 里指针/输入跨屏的机制。所以"左右关系"和"光标跨屏"是同一件事。
+### 1. 输入设备判定写错了（这是日志里绑定失败的真正原因）
 
-必须探测，因为 flag 关闭时服务端：
-    getDisplayTopology() -> mDisplayTopologyCoordinator == null 时返回 null
-    setDisplayTopology() -> coordinator 为 null 时静默空操作，不报错
+Dextop 的 PhysicalDeviceRouting.eligibleDevices 用：
+    device.id >= 0 && device.isExternal && device.descriptor.isNotBlank() && ...
+InputDevice.isExternal() 是公共 API。而我用反射读 getLocation() 是否非空 —
+在该 ROM 上返回空，于是 6 个输入设备全被过滤，报"没有可绑定的外接输入设备"。
 
-所以本版：先探测 -> 写入 -> getDisplayTopology() 读回验证，
-读回不一致就明确告知"本机关闭了该能力"，不给假的成功。
+现改为 isExternal + 鼠标/键盘类型筛选，并把不符合条件的设备全部列出，
+便于判断是"没有外接设备"还是筛选条件不对。
+另外用 InputDevice.getAssociatedDisplayId() 做读回验证（Dextop 用它判断绑定是否生效），
+不再只看写入是否报错。
 
-## 键盘为什么不绑
+### 2. 拓扑事务号不该硬编码
 
-Android 输入设备关联是静态绑定（设备到屏幕），没有"键盘跟随焦点动态切换"。
-但键事件走焦点窗口：点哪块屏哪块屏获焦，键盘就往哪里输。
-所以正确做法是把鼠标绑到外屏、键盘不绑。
+Dextop 源码明确警告：transaction ids 在不同 Android 版本与 OEM 分支间不稳定，
+新版本上旧的 id 可能指向 requestDisplayModes()（受 RESTRICT_DISPLAY_MODES 保护），
+Never use a numeric fallback。
 
-## 两个桌面
+上一版用了硬编码 63/64，现改为从 IDisplayManager$Stub 读真实
+TRANSACTION_getDisplayTopology / TRANSACTION_setDisplayTopology 常量；
+读不到就判定不支持并明确报告，绝不退回数字。
 
-- 一键建立双桌面：扩展模式 -> 点亮内屏 -> 把输入绑到外屏 -> 尝试设置左右关系
-- 在内屏开应用 / 在外屏开应用：分别把应用启动到指定桌面
-- 底层是系统自带的 am start --display <id>
+### 3. 键盘不该绑定
 
-## 新增界面
+Dextop 把鼠标与键盘分开控制（mouse/keyboard 两个参数）。原因是 Android 的设备关联
+是静态的：把键盘绑到外屏后它只往外屏送键事件。
+所以本版默认只绑鼠标、不绑键盘；键事件走焦点窗口，
+两块屏按焦点各自接收键盘输入，更接近"选哪个屏就在哪里输入"。
 
-- 一键建立双桌面 / 在内屏开应用 / 在外屏开应用
-- 探测拓扑支持 / 外屏在左 / 外屏在右
-- 绑定输入到外屏 / 解除绑定 / 查看输入设备列表
+## 能力边界（如实）
 
-## 新增文件
+- 两个桌面：系统层面成立（用户已用 am start --display 验证满屏 4K）
+- 鼠标能否操作外屏：修正了判定逻辑，是否放行需实测
+- 键盘跟焦点：按上述策略处理，需实测
+- 屏幕左右关系 / 鼠标自由跨屏拖拽：依赖 DisplayTopology，本机被 ROM 关闭，无法实现
 
-- DisplayTopologyController.kt：DisplayTopology 的探测与左右布局设置
-  （getDisplayTopology=63、setDisplayTopology=64，真实 aidl.exe 验证）
-- InputRoutingController.kt：输入设备到显示器的绑定
-  （三级回退；按 API 36 实际 AIDL 修正方法名，参考项目用的
-   addUniqueIdAssociation/removeUniqueIdAssociation 在 API 36 已不存在）
+### 新增文件
 
-## 诚实说明
+- InputRoutingController.kt 重构：isExternal 判定、读回验证、鼠标/键盘分离
+- DisplayTopologyController.kt：事务号动态解析、去掉硬编码与强制解包
 
-- 依然没有真机验证。DisplayTopology 的构造涉及较多隐藏 API 反射，
-  是否在该 ROM 上可用需要实测。
-- 如果光标自由跨屏最终做不到，那是 Android 输入模型的限制，
-  会明确告知，而不是继续给"界面成功、现实没变化"的东西。
+## 验证步骤
+
+1. 查看输入设备列表，重点看有没有 external=true 的设备、是鼠标还是键盘
+2. 绑定输入到外屏，看三级回退结果 + 读回验证那行
+3. 把探测拓扑的完整输出发回
+
+## 说明
+
+依然没有真机验证。若输入绑定仍不生效，会明确告知"这条路在 ColorOS 上不通"，
+并转向只做两个桌面（不追求鼠标跨屏）。

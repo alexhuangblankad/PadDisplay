@@ -80,51 +80,62 @@ class InputRoutingController(
         val name: String,
         val descriptor: String,
         val location: String,
+        /** `InputDevice.isExternal()` —— 公共 API，外接设备判定的正确依据 */
         val isExternal: Boolean,
         val isVirtual: Boolean,
-    )
+        val isMouse: Boolean,
+        val isKeyboard: Boolean,
+        /** `InputDevice.getAssociatedDisplayId()`（隐藏 API）：当前关联到哪块屏 */
+        val associatedDisplayId: Int?,
+    ) {
+        val purpose: String
+            get() = when {
+                isMouse && isKeyboard -> "鼠标+键盘"
+                isMouse -> "鼠标/指针"
+                isKeyboard -> "键盘"
+                else -> "其他"
+            }
+    }
 
     // ------------------------------------------------------------------
     // 读取
     // ------------------------------------------------------------------
 
-    /** 枚举输入设备（走 IInputManager，需要 shell 权限）。 */
-    fun listInputDevices(): List<InputDeviceInfo> {
-        val binder = inputManagerBinder ?: return emptyList()
-        val ids = AidlCodec.call(
-            binder = binder,
-            descriptor = DESCRIPTOR_INPUT_MANAGER,
-            label = "getInputDeviceIds",
-            code = Codes.GET_INPUT_DEVICE_IDS,
-            writeArgs = { },
-            readReply = { reply -> reply.createIntArray() ?: IntArray(0) },
-        ).getOrNull() ?: return emptyList()
-
-        return ids.toList().mapNotNull { id ->
-            val dev = readInputDevice(id) ?: return@mapNotNull null
-            val location = locationOf(dev)
+    /**
+     * 枚举输入设备。
+     *
+     * ⚠️ 关键修正（对照参考项目 Dextop 的 `PhysicalDeviceRouting`）：
+     * 判定"是否外接"必须用**公共 API `InputDevice.isExternal()`**，
+     * 而不是像早先那样靠 `getLocation()` 字符串非空 ——
+     * 在某些 ROM 上 `getLocation()` 返回空，会把**所有设备都过滤掉**，
+     * 于是永远报"没有找到可绑定的外接输入设备"。
+     */
+    fun listInputDevices(): List<InputDeviceInfo> =
+        InputDevice.getDeviceIds().toList().mapNotNull { id ->
+            if (id < 0) return@mapNotNull null
+            val dev = runCatching { InputDevice.getDevice(id) }.getOrNull() ?: return@mapNotNull null
+            val sources = runCatching { dev.sources }.getOrDefault(0)
+            val isMouse = (sources and InputDevice.SOURCE_MOUSE) == InputDevice.SOURCE_MOUSE
+            val isKeyboard = runCatching {
+                dev.keyboardType == InputDevice.KEYBOARD_TYPE_ALPHABETIC
+            }.getOrDefault(false)
             InputDeviceInfo(
                 id = id,
                 name = runCatching { dev.name }.getOrNull() ?: "?",
                 descriptor = runCatching { dev.descriptor }.getOrNull() ?: "",
-                location = location,
-                isExternal = location.isNotBlank() && !runCatching { dev.isVirtual }.getOrDefault(false),
+                location = locationOf(dev),
+                isExternal = runCatching { dev.isExternal }.getOrDefault(false),
                 isVirtual = runCatching { dev.isVirtual }.getOrDefault(false),
+                isMouse = isMouse,
+                isKeyboard = isKeyboard,
+                associatedDisplayId = associatedDisplayIdOf(dev),
             )
         }
-    }
 
-    private fun readInputDevice(deviceId: Int): InputDevice? = AidlCodec.call(
-        binder = inputManagerBinder,
-        descriptor = DESCRIPTOR_INPUT_MANAGER,
-        label = "getInputDevice($deviceId)",
-        code = Codes.GET_INPUT_DEVICE,
-        writeArgs = { it.writeInt(deviceId) },
-        readReply = { reply ->
-            val present = reply.readInt()
-            if (present == 0) null else InputDevice.CREATOR.createFromParcel(reply)
-        },
-    ).getOrNull()
+    /** `InputDevice.getAssociatedDisplayId()` 是隐藏 API，用反射读（读回验证用）。 */
+    private fun associatedDisplayIdOf(device: InputDevice): Int? = runCatching {
+        Reflect.findMethod(device.javaClass, "getAssociatedDisplayId")?.invoke(device) as? Int
+    }.getOrNull()
 
     /**
      * 从 `dumpsys input` 解析「设备描述符 -> 输入端口」映射。
@@ -252,11 +263,31 @@ class InputRoutingController(
         )
 
     /**
-     * 把**所有外接输入设备**绑定到指定显示器。
+     * 挑出可绑定的设备。
      *
-     * 三级回退，与参考项目一致，但方法名按 Android 16 的 AIDL 修正过。
+     * 对照 Dextop 的 `eligibleDevices`：用**公共 API `isExternal`** + descriptor 非空，
+     * 再按鼠标/键盘类型筛选。**不再用 `getLocation()` 是否为空来判定** ——
+     * 那正是"6 个设备全被过滤掉"的原因。
      */
-    fun bindAllExternalInputToDisplay(display: Display): List<Report> {
+    private fun eligibleDevices(mouse: Boolean, keyboard: Boolean): List<InputDeviceInfo> =
+        listInputDevices().filter { d ->
+            d.isExternal && d.descriptor.isNotBlank() &&
+                ((mouse && d.isMouse) || (keyboard && d.isKeyboard))
+        }
+
+    /**
+     * 把**外接输入设备**绑定到指定显示器。
+     *
+     * @param includeMouse 绑定鼠标/指针设备（推荐 true）
+     * @param includeKeyboard 是否连键盘一起绑定。
+     *   **默认 false**：Android 的设备关联是静态的，把键盘绑到外屏后它就只往外屏送键事件；
+     *   而键事件本身走**焦点窗口**，不绑反而能让两块屏按焦点各自接收键盘输入。
+     */
+    fun bindAllExternalInputToDisplay(
+        display: Display,
+        includeMouse: Boolean = true,
+        includeKeyboard: Boolean = false,
+    ): List<Report> {
         val reports = mutableListOf<Report>()
         if (inputManagerBinder == null) {
             return listOf(Report(false, "IInputManager", "取不到 input 系统服务（需要 Shizuku）"))
@@ -269,12 +300,26 @@ class InputRoutingController(
             return reports
         }
 
-        val devices = listInputDevices().filter { it.isExternal }
+        val devices = eligibleDevices(mouse = includeMouse, keyboard = includeKeyboard)
         if (devices.isEmpty()) {
-            reports += Report(false, "外接输入设备", "没有找到可绑定的外接输入设备（Location 为空的设备会被跳过）")
+            val all = listInputDevices()
+            reports += Report(
+                false,
+                "可绑定设备",
+                "没有符合条件的设备（mouse=$includeMouse keyboard=$includeKeyboard）；" +
+                    "当前共 ${all.size} 个输入设备：",
+            )
+            all.forEach { d ->
+                reports += Report(
+                    true,
+                    "  ·",
+                    "id=${d.id} name=${d.name} external=${d.isExternal} virtual=${d.isVirtual} " +
+                        "${d.purpose} assoc=${d.associatedDisplayId ?: "-"}",
+                )
+            }
             return reports
         }
-        reports += Report(true, "外接输入设备", devices.joinToString { "${it.name}@${it.location}" })
+        reports += Report(true, "可绑定设备", devices.joinToString { "${it.name}(${it.purpose})" })
 
         val portMap = descriptorToPortMap()
 
@@ -282,7 +327,7 @@ class InputRoutingController(
             val inputPort = portMap[dev.descriptor] ?: dev.location
             var bound = false
 
-            // 级别 1：按描述符关联 uniqueId
+            // 级别 1：按描述符关联 uniqueId（Dextop 的做法，最可靠）
             if (!uniqueId.isNullOrEmpty()) {
                 val r1 = addUniqueIdByDescriptor(dev.descriptor, uniqueId)
                 reports += r1
@@ -305,6 +350,20 @@ class InputRoutingController(
             if (!bound) {
                 reports += Report(false, "绑定失败", "${dev.name} 三级回退全部失败")
             }
+        }
+
+        // ---- 读回验证：用 getAssociatedDisplayId() 确认真的关联上了 ----
+        val after = listInputDevices().filter { d -> devices.any { it.id == d.id } }
+        val associated = after.filter { it.associatedDisplayId == display.displayId }
+        reports += if (associated.isNotEmpty()) {
+            Report(true, "读回验证", "已关联到 displayId=${display.displayId}：" + associated.joinToString { it.name })
+        } else {
+            Report(
+                false,
+                "读回验证",
+                "写入返回成功，但 getAssociatedDisplayId() 读回未显示关联到 displayId=${display.displayId}" +
+                    "（实际：" + after.joinToString { "${it.name}=${it.associatedDisplayId ?: "-"}" } + "）",
+            )
         }
         return reports
     }

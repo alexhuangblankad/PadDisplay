@@ -449,7 +449,14 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
             appendLine("拿不到该 Display")
             return@buildString
         }
-        val reports = inputController.bindAllExternalInputToDisplay(display)
+        // 只绑鼠标/指针；**键盘默认不绑** —— Android 的设备关联是静态的，
+        // 绑了键盘它就只往外屏送键事件；而键事件走焦点窗口，
+        // 不绑反而能让两块屏按焦点各自接收键盘输入。
+        val reports = inputController.bindAllExternalInputToDisplay(
+            display = display,
+            includeMouse = true,
+            includeKeyboard = false,
+        )
         val ok = reports.any { it.ok && it.channel.startsWith("add") }
         appendLine("RESULT_OK=$ok")
         appendLine()

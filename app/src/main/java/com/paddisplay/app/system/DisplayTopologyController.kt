@@ -48,9 +48,6 @@ import android.os.Parcelable
 class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
 
     companion object {
-        private const val GET_DISPLAY_TOPOLOGY = 63
-        private const val SET_DISPLAY_TOPOLOGY = 64
-
         private const val CLASS_TOPOLOGY = "android.hardware.display.DisplayTopology"
         private const val CLASS_TREE_NODE = "android.hardware.display.DisplayTopology\$TreeNode"
 
@@ -60,6 +57,36 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
         const val POSITION_RIGHT = 2
         const val POSITION_BOTTOM = 3
     }
+
+    /**
+     * transaction code。
+     *
+     * ⚠️ 参考项目 Dextop 的 `DisplayTopologyController` 里有一条明确警告：
+     *
+     * > Transaction ids ... are not stable across Android releases or OEM framework forks.
+     * > **Never use a numeric fallback here**: on newer builds the old id may point at
+     * > `requestDisplayModes()`, which is protected by `RESTRICT_DISPLAY_MODES`.
+     *
+     * 所以本实现**优先从 `IDisplayManager$Stub` 读真实常量**；
+     * 读不到就**判定为不支持**，绝不退回硬编码数字。
+     */
+    private val resolvedCodes: Pair<Int, Int>? by lazy {
+        runCatching {
+            val stub = Reflect.classForName("android.hardware.display.IDisplayManager\$Stub")
+                ?: return@runCatching null
+            fun read(name: String): Int? = runCatching {
+                val f = stub.getDeclaredField(name)
+                f.isAccessible = true
+                f.getInt(null)
+            }.getOrNull()
+            val get = read("TRANSACTION_getDisplayTopology")
+            val set = read("TRANSACTION_setDisplayTopology")
+            if (get != null && set != null) get to set else null
+        }.getOrNull()
+    }
+
+    /** 本机是否支持读取/写入显示拓扑（以能否解析到真实事务号为准）。 */
+    fun isSupported(): Boolean = resolvedCodes != null && displayManagerBinder != null
 
     data class Report(val ok: Boolean, val channel: String, val detail: String) {
         fun toText(): String = if (ok) "✅ $channel: $detail" else "❌ $channel: $detail"
@@ -75,17 +102,21 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
     // 读取
     // ------------------------------------------------------------------
 
-    private fun readTopology(): Any? = AidlCodec.call(
-        binder = displayManagerBinder,
-        descriptor = AidlCodec.DESCRIPTOR_DISPLAY_MANAGER,
-        label = "getDisplayTopology",
-        code = GET_DISPLAY_TOPOLOGY,
-        writeArgs = { },
-        readReply = { reply ->
-            val present = reply.readInt()
-            if (present == 0) null else readParcelableFromReply(reply, CLASS_TOPOLOGY)
-        },
-    ).getOrNull()
+    private fun readTopology(): Any? {
+        // 解析不到真实事务号 ⇒ 判定不支持，绝不用硬编码数字去 transact
+        val codes = resolvedCodes ?: return null
+        return AidlCodec.call(
+            binder = displayManagerBinder,
+            descriptor = AidlCodec.DESCRIPTOR_DISPLAY_MANAGER,
+            label = "getDisplayTopology",
+            code = codes.first,
+            writeArgs = { },
+            readReply = { reply ->
+                val present = reply.readInt()
+                if (present == 0) null else readParcelableFromReply(reply, CLASS_TOPOLOGY)
+            },
+        ).getOrNull()
+    }
 
     private fun readParcelableFromReply(reply: Parcel, className: String): Any? {
         val clazz = Reflect.classForName(className) ?: return null
@@ -104,11 +135,17 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
         if (displayManagerBinder == null) {
             return Capability(false, "取不到 display 系统服务")
         }
+        val codes = resolvedCodes
+            ?: return Capability(
+                false,
+                "无法从 IDisplayManager\$Stub 解析 TRANSACTION_getDisplayTopology —— " +
+                    "本机不提供该能力的可靠事务号，按不支持处理（不使用硬编码数字，避免误调其它方法）。",
+            )
         val result = AidlCodec.call(
             binder = displayManagerBinder,
             descriptor = AidlCodec.DESCRIPTOR_DISPLAY_MANAGER,
             label = "getDisplayTopology",
-            code = GET_DISPLAY_TOPOLOGY,
+            code = codes.first,
             writeArgs = { },
             readReply = { reply ->
                 val present = reply.readInt()
@@ -281,11 +318,16 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
         }.getOrNull() ?: return listOf(Report(false, "DisplayTopology(TreeNode,int)", "构造失败"))
 
         // 4) 写入
+        val codes = resolvedCodes ?: return reports + Report(
+            false,
+            "setDisplayTopology",
+            "无法解析真实事务号，为避免误调其它方法（例如受 RESTRICT_DISPLAY_MODES 保护的 requestDisplayModes），已放弃写入",
+        )
         val writeResult = AidlCodec.callVoid(
             binder = displayManagerBinder,
             descriptor = AidlCodec.DESCRIPTOR_DISPLAY_MANAGER,
             label = "setDisplayTopology",
-            code = SET_DISPLAY_TOPOLOGY,
+            code = codes.second,
             writeArgs = { data ->
                 data.writeInt(1)
                 @Suppress("UNCHECKED_CAST")
@@ -328,7 +370,7 @@ class DisplayTopologyController(private val displayManagerBinder: IBinder?) {
     /** 诊断文本。 */
     fun describe(): String = buildString {
         appendLine("display binder: ${AidlCodec.describeBinder(displayManagerBinder)}")
-        appendLine("code: getDisplayTopology=$GET_DISPLAY_TOPOLOGY setDisplayTopology=$SET_DISPLAY_TOPOLOGY")
+        appendLine("code: " + (resolvedCodes?.let { "从 Stub 解析 get=${it.first} set=${it.second}" } ?: "无法解析（判定为不支持）"))
         appendLine("DisplayTopology 类: ${if (Reflect.classForName(CLASS_TOPOLOGY) != null) "可用" else "不可用"}")
         appendLine("TreeNode 类: ${if (Reflect.classForName(CLASS_TREE_NODE) != null) "可用" else "不可用"}")
         val cap = probe()
