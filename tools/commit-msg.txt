@@ -1,96 +1,42 @@
-docs: 鼠标跨屏需求广泛调研 —— 结论：编译期开关，非 root 无解
+docs: 新增完整交接文档 HANDOFF.md
 
-## 调研触发
+## 目的
 
-用户实测反馈：强制桌面模式后桌面"很失败，只能触屏使用"。
-用户要求：先广泛找相关开源软件，再写代码；并提出可能需刷原生 Android 17。
+用户要求把所有调研与实现总结成交接文档，交由其他 agent 判断
+"在 Shizuku（shell 权限）之下能否用软件层实现原生鼠标跨屏"。
 
-## 决定性发现
+## 文档内容
 
-### 1. 这是 Android 16 QPR3 的官方功能
+docs/HANDOFF.md 覆盖：
+- 一句话现状 + 项目基本信息（版本 v0.6.1、构建/发布流程、交付约定）
+- 用户设备实测参数（OPPO Pad Mini / SD 8 Gen 5 / Android 16 / 2520x1680 + 4K@60）
+- 技术机制全貌，分三段明确区分能/不能/未验证：
+  1. 输入设备关联（addUniqueIdAssociation*）：仅检查
+     ASSOCIATE_INPUT_DEVICE_TO_DISPLAY（signature），而 shell 已被授予该权限
+     （frameworks/base/packages/Shell/AndroidManifest.xml 原文）→ 权限足够，
+     事务码 2/3/40-45 已用真实 aidl.exe 验证全部正确
+  2. 指针连续跨屏：需要 display_topology，read-only aconfig flag，
+     is_fixed_read_only: true，运行时不可改；flag 为 false 时整段代码路径
+     不存在于编译产物中 → shell 权限再高也无法调用未编译进来的代码
+  3. setPointerDisplayId：非 Binder，外部调不到；但系统在
+     mForceDesktopModeOnExternalDisplays 为真时会自己调
+- 行业权威旁证：SmartDock DFC 的 INPUT_ROUTING_A14.md（指针模式表 +
+  四条路径门槛），以及其商业版"必须编译进系统"的事实
+- 未验证的最大机会：输入设备关联曾因代码 bug 失败（getLocation 判定），
+  修复后从未重测；给出完整实测步骤与判据
+- 已排除方案清单（settings put global / 自绘光标 / 启动器 / 虚拟显示器 / 打包第三方 APK）
+- 给用户的结论路线（配鼠标 / 解 BL+root+LSPosed / 换三星）
+- 死过的坑：事务码两次 off-by-one、假成功与哨兵值、异常被吞、
+  PowerShell 编码事故、注释块操作事故、空字符串抛异常
+- 参考项目清单、代码结构、证据文件位置
 
-Android Developers 官方博客（2026-03-03）与 IT 之家（2026-03-05）报道：
-针对支持桌面窗口化管理的平板，连接后桌面会话扩展至两块屏，
-"应用窗口、内容以及鼠标光标均可在平板屏幕与外接显示器之间自由穿梭"。
+## 核心未解问题（列给接手者）
 
-### 2. 但它是编译期常量，AOSP 默认关闭
+在 display_topology 为 false 的 ROM 上，输入系统里如何建立两块屏之间的
+连续坐标空间？若无解，则"鼠标滑过去"不可能实现，能实现的只有
+"把鼠标放到外接屏"（PHYSICAL_HARDWARE 模式，需实测）。
 
-frameworks/base/core/res/res/values/config.xml（AOSP main）：
-    <!-- Whether desktop mode is supported on the current device  -->
-    <bool name="config_isDesktopModeSupported">false</bool>
+## 其他
 
-默认 false —— 每个 OEM 必须在产品 overlay 里改成 true。
-目标设备该值为 false（此前已探测）。
-
-### 3. display_topology 是 read-only aconfig flag
-
-display_flags.aconfig（android-16.0.0-r1）：
-    flag {
-        name: "display_topology"
-        namespace: "display_manager"
-        description: "Display topology for moving cursors and windows between extended displays"
-        bug: "364906028"
-        is_fixed_read_only: true
-    }
-AOSP 文档：只读 aconfig 标志是布尔常量，无法在运行时更改。
-
-### 4. setPointerDisplayId 不是 Binder 服务
-
-NativeInputManagerService.setPointerDisplayId 是 native 本地接口，
-全 AOSP 只有一处调用：IMS.setDisplayViewportsInternal() ->
-mNative.setPointerDisplayId(mWindowManagerCallbacks.getPointerDisplayId())。
-App / Shizuku / adb 均无法直接调用。
-
-### 5. DisplayTopology 类是 @hide
-
-core/java/android/hardware/display/DisplayTopology.java 类注释含 @hide，
-第三方应用不能直接使用。
-
-### 6. 社区唯一开启方案需要 root
-
-igorb200828/Android_16_Desktop_Experience_Enabler 是 LSPosed 模块，
-用于开启开发者选项的 "Enable desktop experience features"，
-需要 root，且自述仅适用于 Android 16 QPR1 Beta 1。
-
-## 为何"强制桌面模式"体验很差
-
-WMS 中该字段注释仍含未完成事项：
-    - Enable system decorations and IME on external screen.
-    - TODO: Show mouse pointer on external screen.
-且 getPointerDisplayId() 的 freeform 分支只把指针放到某一块屏，
-不提供两块屏之间的连续坐标空间（那需要 display_topology）。
-
-## 开源方案全景（逐个读过）
-
-- Dextop / connect-screen：虚拟显示器，非物理外接屏
-- AdaptiveScreenPlus / deskpad-app：自绘光标 + 注入或无障碍手势（非原生指针）
-- AirBeam：AirMouse / 触控板形态
-- Taskbar / Smart Dock：只解决桌面外观
-- igorb200828 Enabler：LSPosed，需 root
-
-负面结论：没有任何非 root 开源项目实现"系统原生指针在两块物理屏之间穿梭"。
-
-## 三条路代价对照
-
-A. 刷原生 Android 17 / 支持 Connected Display 的 ROM：能实现，官方原生体验；
-   代价是失去 ColorOS 功能、保修、变砖风险
-B. root + LSPosed：可能能，但 display_topology 是编译期 flag，root 也未必能开
-C. 非原生替代（自绘光标 + 注入）：不是原生指针，破坏 Moonlight，用户已否掉
-D. 只换桌面壳：指针问题依旧
-
-用户"可能真要刷机"的判断在技术上成立，且期望收益最高。
-
-## 新增文件
-
-- docs/pointer-spanning-research.md：完整调研报告
-- tools/aosp-snapshots/InputManagerCallback.api36.java：getPointerDisplayId 实现证据
-- tools/aosp-snapshots/display_flags.api36.aconfig：display_topology flag 定义证据
-- tools/aosp-snapshots/DisplayTopology.main.java：@hide 证据
-
-## 后续建议
-
-1. 先确认该机型 ROM 现状（是否有原生/第三方 ROM、bootloader 能否解锁）
-2. 刷机前 PadDisplay 保留为显示器控制工具（分辨率/刷新率/内屏开关/音频路由）
-3. 若刷机可行，拓扑可用时只需做布局设置，工作量很小
-
-不再继续：settings put global 路线、自绘光标路线、在 ColorOS 上尝试半开桌面模式。
+- README 新增 11.4 节指向交接文档与两份调研文档
+- 已核对文档中引用的全部文件路径均存在

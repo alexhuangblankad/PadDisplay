@@ -610,6 +610,23 @@ keystore/                                构建用密钥库
 
 ---
 
+## 11.4 交接文档
+
+若要接手「鼠标跨屏」这件事，请先读：
+
+- **[docs/HANDOFF.md](docs/HANDOFF.md)** —— 完整交接文档。
+  含 AOSP 源码证据、真实 aidl.exe 验证过的事务码、已排除方案清单、
+  未验证的最大机会（输入设备关联 + 读回验证）、以及死过的坑。
+- **[docs/pointer-spanning-research.md](docs/pointer-spanning-research.md)** —— 广泛调研报告。
+- **[docs/how-to-get-mouse-spanning.md](docs/how-to-get-mouse-spanning.md)** —— 三条可行路线执行清单。
+
+**核心未解问题**（接手者须回答）：
+
+> 在 `display_topology` 这个 **read-only aconfig flag** 为 false 的 ROM 上，
+> 输入系统里如何建立两块屏之间的**连续坐标空间**？
+
+若无解，则"鼠标滑过去"不可能；能实现的只有"把鼠标**放到**外接屏"
+（`addUniqueIdAssociation*`，shell 有权限，**但尚未实测**）。
 ## 11.5 为什么「鼠标跨屏」在部分机器上做不到（查证结论）
 
 这是被反复追问的一个问题，这里给出**基于源码的确定答案**，避免再走弯路。
