@@ -1,63 +1,52 @@
-v0.4.1: 触控板（自绘光标 + 注入指针）；移除写死打开设置
+docs: 补充 11.5 节 —— 用源码证据解释「鼠标跨屏为什么做不到」
 
-## 修两个用户指出的问题
+## 把这个问题查到底了
 
-### 1. 外接屏卡在设置，是代码写死的
+用户反复追问「为什么做不到」，这次给出基于 AOSP 源码的确定答案，
+并写进 README 永久记录，避免后续再走弯路。
 
-一键完成的最后一步执行的是
-  am start --display 4 -n com.android.settings/.Settings
-我把设置这个组件写死了，所以外屏被设置占住、什么都干不了。
-本版移除该步骤：一键开始只负责把外接屏独立出来，
-开哪个应用由用户从「打开应用到外接屏」自己选。
+### 这个功能在 Android 里存在，且官方描述就是「光标跨屏」
 
-### 2. 用户装的是 v0.3.3
+AOSP frameworks/base/services/core/java/com/android/server/display/feature/display_flags.aconfig
+（android-16.0.0_r1）原文：
 
-日志抬头显示 v0.3.3，应用抽屉是 v0.4.0 才有的，
-所以"无法打开其他 app"部分只是版本没更新。
+    flag {
+        name: "display_topology"
+        namespace: "display_manager"
+        description: "Display topology for moving cursors and windows between extended displays"
+        bug: "364906028"
+        is_fixed_read_only: true
+    }
 
-## 鼠标问题：换一条能走通的路
+description 明确写着「在扩展显示器之间移动光标和窗口」—— 正是需求本身。
 
-参考项目 AdaptiveScreenPlus 的架构（已跑通）：
-- 系统只给真实鼠标画指针，注入事件不会点亮它 -> 光标必须自己画
-  （外接屏上的 TYPE_APPLICATION_OVERLAY 悬浮窗）
-- 点击/移动靠注入：IInputManager.injectInputEvent + MotionEvent.setDisplayId
-  （不用 input 命令：参考项目实测一条 47ms，拖动会一跳一跳）
-- 坐标空间从系统侧量：dumpsys window displays 的 cur=WxH
-  （不能用 Display.getRealSize()，会被应用兼容缩放污染）
+它在系统服务里驱动输入的方式（DisplayManagerService）：
 
-### 新增「用平板当外接屏的触控板」
+    if (mFlags.isDisplayTopologyEnabled()) {
+        DisplayTopologyGraph graph = update.second;
+        mInputManagerInternal.setDisplayTopology(graph);   // 喂给输入系统
+    }
 
-主界面入口 -> 触控板页面：
-- 手指滑动：外接屏上自绘光标跟随移动，并注入指针移动事件
-- 轻点：在光标处注入单击（DOWN+UP 左键）
-- 右键按钮：注入右键
-- 快/慢：灵敏度
+没有这个 flag，输入系统里就不存在统一的多屏坐标空间，光标不可能跨屏。
 
-需要 Shizuku（注入指针）与「显示在其他应用上层」（画光标）。
+### 为什么 App 改不动
 
-## 关于打包 standby / smartdock
+is_fixed_read_only: true 的含义（AOSP 官方文档）：
+「只读 aconfig 标志是布尔常量，无法在运行时更改。」
 
-未做，理由：
-1. 是别人的 GPL 应用，整包再分发有许可与来源问题
-2. 打包了也解决不了：它们同样依赖被 ColorOS 关闭的 DisplayTopology
-   或系统桌面模式，在该机照样跑不出效果
-3. 自有「应用抽屉」已能在外屏开任意应用，"两个桌面"这条已通
+配套版本配置里权限为 READ_ONLY。只读标志的值在编译系统镜像时定死，
+aflags / device_config 这类运行时开关对它无效（只能改"读写"标志）。
 
-## 新增/修改文件
+### 结论表
 
-- touchpad/CursorOverlay.kt：外接屏上的自绘光标（display context + 悬浮窗，
-  活动范围用 dumpsys window displays 的 cur=WxH 校准）
-- touchpad/TouchpadView.kt：触控板手势（相对移动 + 轻点判定）
-- touchpad/TouchpadActivity.kt：触控板页面（Compose + AndroidView）
-- system/PointerInjector.kt：MotionEvent + setDisplayId 反射 +
-  IInputManager.injectInputEvent（code=11，真实编译器验证）
-- IPadDisplayService.aidl：injectPointer / injectPointerMove
-- PadDisplayUserService.kt：指针注入实现
-- AndroidManifest.xml：SYSTEM_ALERT_WINDOW 权限 + TouchpadActivity 注册
-- MainScreen.kt：TouchpadEntryCard 入口
-- SystemDisplayService.kt：一键开始不再写死打开设置
+- App / Shizuku 调 API：不可行（服务端 coordinator 为 null，静默空操作）
+- aflags enable / device_config put：不可行（只读标志）
+- 改系统镜像后重刷（root / 第三方 ROM）：唯一真正可行的办法
+- 等厂商后续版本打开该 flag：只能等
 
-## 说明
+即：不是实现难度问题，是厂商在编译时关掉了它。
 
-依然没有真机验证。触控板每一步都按参考项目的实测结论实现，
-但能否在 ColorOS 上跑通需实测反馈。
+### 替代方案
+
+不开 root 的前提下：触控板方案（外接屏自绘光标 + 注入指针事件），
+见 README 6.9 节与 v0.4.1 实现。

@@ -610,6 +610,75 @@ keystore/                                构建用密钥库
 
 ---
 
+## 11.5 为什么「鼠标跨屏」在部分机器上做不到（查证结论）
+
+这是被反复追问的一个问题，这里给出**基于源码的确定答案**，避免再走弯路。
+
+### 这个功能在 Android 里存在，而且官方描述就是"光标跨屏"
+
+AOSP `frameworks/base/services/core/java/com/android/server/display/feature/display_flags.aconfig`
+（android-16.0.0_r1）里的原文：
+
+```
+flag {
+    name: "display_topology"
+    namespace: "display_manager"
+    description: "Display topology for moving cursors and windows between extended displays"
+    bug: "364906028"
+    is_fixed_read_only: true
+}
+```
+
+注意 `description`：**"在扩展显示器之间移动光标和窗口"** —— 这正是需求本身。
+
+而它在系统服务里驱动输入的方式是：
+
+```java
+// DisplayManagerService
+if (mFlags.isDisplayTopologyEnabled()) {
+    DisplayTopologyGraph graph = update.second;
+    mInputManagerInternal.setDisplayTopology(graph);   // ← 喂给输入系统
+}
+```
+
+也就是说：**没有这个 flag，输入系统里就不存在统一的多屏坐标空间，
+光标也就不可能跨过两块屏。**
+
+### 为什么 App 改不动它
+
+`is_fixed_read_only: true` 的含义（AOSP 官方文档）：
+
+> **只读 aconfig 标志是布尔常量，无法在运行时更改。**
+> 对于稳定且已准备好发布的代码，您可以将读写 aconfig 标志转换为只读 aconfig 标志。
+
+配套的版本配置里权限是 `READ_ONLY`：
+
+```
+flag_value {
+  package: "com.android.server.display.feature.flags"
+  name: "display_topology"
+  permission: READ_ONLY
+}
+```
+
+**只读标志的值在编译系统镜像时就定死了**，`aflags` / `device_config`
+这类运行时开关对它无效（那些只能改"读写"标志）。
+
+### 所以在 ColorOS 这类机器上的结论
+
+| 途径 | 是否可行 |
+|---|---|
+| App / Shizuku 调 API | ❌ 服务端 coordinator 为 null，`setDisplayTopology` 静默空操作 |
+| `aflags enable` / `device_config put` | ❌ 只读标志，运行时不可改 |
+| 改系统镜像后重刷（root / 第三方 ROM） | ✅ 唯一真正可行的办法 |
+| 等厂商在后续版本里打开该 flag | ⚠️ 只能等，且不保证 |
+
+**这就是"为什么做不到"的全部原因。** 不是实现难度问题，是厂商在编译时关掉了它。
+
+### 在不开 root 的前提下，替代方案
+
+参见 6.9 节「用平板当外接屏的触控板」：在外接屏上自绘光标 + 注入指针事件。
+这不是"鼠标跨屏"，但它是非 root 下唯一能让外接屏真正可操作的办法。
 ## 12. 已知限制（v0.1.6）
 
 - **未在真机上完成全量验证**。首次使用请务必先看诊断信息与「Mode 自检」。
