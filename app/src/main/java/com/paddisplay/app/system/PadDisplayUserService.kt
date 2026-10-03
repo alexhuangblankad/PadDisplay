@@ -427,6 +427,53 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine(execRaw("/system/bin/dumpsys display | grep -i -A2 'mDisplayId=$externalDisplayId' | head -n 40"))
     })
 
+    /**
+     * 在外接屏上真实启动一个 Activity（决定性测试）。
+     *
+     * 用系统自带的 `am start --display`，完全绕开本应用的实现。
+     */
+    override fun launchOnDisplay(displayId: Int, component: String): String = clean(buildString {
+        appendLine("=== 在外接屏 displayId=$displayId 启动 $component ===")
+        val cmd = "/system/bin/am start --display $displayId -n $component"
+        appendLine("命令: $cmd")
+        appendLine()
+        appendLine(execRaw(cmd).trim().ifEmpty { "(空输出)" })
+        appendLine()
+        appendLine("判读：")
+        appendLine("  · 若外接屏上出现填满 4K 的独立窗口 → 扩展在系统层面成立，")
+        appendLine("    黑边来自上层的镜像/投屏，需要在 ColorOS 多屏设置里关闭投屏。")
+        appendLine("  · 若仍然带黑边 → ColorOS 的多屏服务在更上层接管了外接屏。")
+    })
+
+    /**
+     * 找 ColorOS 的多屏 / 投屏 / 外接显示相关设置页入口。
+     *
+     * 外接屏的「复制 / 扩展」在 ColorOS 上由私有服务
+     * `dynamicallyConfigViewer` 那套逻辑控制，找不到公开 API，
+     * 所以直接把这些设置页挖出来让用户自己进去看。
+     */
+    override fun findDisplaySettingsActivities(): String = clean(buildString {
+        appendLine("=== ColorOS 多屏/投屏 相关设置页 ===")
+        val keywords = "projection|cast|screen|display|mirror|mira|multiscreen|multi_screen|screencast|wireless"
+        appendLine("--- 含关键词的 Activity ---")
+        appendLine(
+            execRaw("/system/bin/cmd package query-activities --brief -a android.intent.action.MAIN " +
+                "| grep -iE '$keywords' | head -n 60").trim().ifEmpty { "(无匹配)" },
+        )
+        appendLine()
+        appendLine("--- OPPO/oplus 包中含关键词的组件 ---")
+        appendLine(
+            execRaw("/system/bin/pm list packages | grep -iE 'oplus|oppo|coloros|screencast|cast' " +
+                "| head -n 40").trim().ifEmpty { "(无匹配)" },
+        )
+        appendLine()
+        appendLine("--- 设置里所有含关键词的入口 ---")
+        appendLine(
+            execRaw("/system/bin/dumpsys package com.android.settings " +
+                "| grep -iE 'Activity' | grep -iE '$keywords' | head -n 40").trim().ifEmpty { "(无匹配)" },
+        )
+    })
+
     /** 反射读 DisplayManagerGlobal.getDisplayInfo(displayId)（隐藏 API）。 */
     private fun readDisplayInfo(displayId: Int): Any? = runCatching {
         val clazz = Reflect.classForName("android.hardware.display.DisplayManagerGlobal")

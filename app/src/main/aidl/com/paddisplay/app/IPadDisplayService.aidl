@@ -81,6 +81,22 @@ interface IPadDisplayService {
      */
     String setForceDesktopMode(boolean enable);
 
+    /**
+     * 在外接屏上真实启动一个 Activity —— **决定性的独立渲染测试**。
+     *
+     * 这是系统自带的 `am start --display <id>`，完全绕开本应用的任何实现。
+     * 如果外接屏上能出现一个填满 4K 的独立窗口，说明「扩展」在系统层面是成立的、
+     * 黑边来自上层的镜像/投屏；如果仍然带黑边，说明 ColorOS 的多屏服务
+     * 在更上层接管了外接屏。
+     *
+     * @param displayId 目标显示器
+     * @param component 要启动的组件（如 com.android.settings/.Settings）
+     */
+    String launchOnDisplay(int displayId, String component);
+
+    /** 找出 ColorOS 的多屏 / 投屏 / 外接显示相关设置页入口。 */
+    String findDisplaySettingsActivities();
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 

@@ -1,60 +1,61 @@
-v0.1.7: 黑边/镜像专项 —— 探测真实镜像状态并给出修复开关
+v0.1.8: 决定性实验（系统自带 am start --display）+ 修掉实测 Parcel 异常
 
-## 为什么这一版是必要的
+## 探针报告推翻了我此前的两个假设
 
-用户实测反馈：无论软件层面怎么报成功，现实层面就是 4K 显示器还有黑边、
-无法用 4K 分辨率、只能用镜像复制模式。
+从 v0.1.7 探针报告读到：
+- 外屏 logicalWidth/Height = 3840x2160，appWidth/Height = 3840x2160
+  -> 满分辨率，无缩放，app 渲染目标就是 4K
+- wm size -d 13 = "Physical size: 3840x2160"，无 Override
+  -> 没有任何强制尺寸覆盖
+- 内屏 2520x1680（rotation=1）-> 内屏 3:2
+- config_isDesktopModeSupported = false -> 本机不支持桌面模式
+- development_force_desktop_mode_on_external_displays = -999 -> 该设置在本机不存在
 
-这句话点破了一个我此前判断错的地方：
+结论：不是 Android 的 display mirroring，也不是我的强制尺寸覆盖。
+外屏拿到的是完整 4K 信号。用户说的"复制模式"发生在更上层 ——
+ColorOS 的多屏/投屏服务（dumpsys display 里 dynamicallyConfigViewer 那两行
+就是它的私有实现）。
 
-windowingMode == FULLSCREEN(1) 不能说明"没在镜像"。
-上一版就是被这个值误导，得出了"已经是扩展模式、问题不在这里"的结论。
-实际上 AOSP 里是否镜像由 DisplayContent.shouldBeMirrored() 单独决定：
+我此前"用 force_desktop_mode 打破镜像"的思路在本机不成立（该设置不存在）。
+这一点判断错了，不再沿这条线走。
 
-  shouldBeMirrored() = !mDisplayWindowSettings.shouldBeEnabled(...)
-                       || (shouldForceDesktopMode()
-                           && windowingMode == WINDOWING_MODE_FULLSCREEN)
+## 黑边的物理解释
 
-其中 DisplayManagerService.shouldForceDesktopMode() 要求：
-  非默认屏 + 设备支持桌面模式(config_isDesktopModeSupported)
-  + Settings.Global.development_force_desktop_mode_on_external_displays == 1
+内屏 2520x1680 = 3:2；显示器 3840x2160 = 16:9。
+镜像时内容按 3:2 送出去，在 16:9 面板上左右必然留黑边。
+只有让外屏拥有自己的合成表面（真扩展），黑边才会消失。
 
-黑边正是镜像的典型症状：镜像时外接屏沿用内屏分辨率（约 2560x1600），
-画面被放大到 4K 面板后周围留黑；同时因为它跟着内屏走，4K 也就设不上。
-所以"黑边"和"分辨率设不上"是同一个根因。
+## 本版新增：决定性实验
 
-## 本版新增
+不再靠猜，改用一个绕开本应用全部实现的系统手段：
 
-1. 镜像状态探针 probeMirrorState，一次输出全部判定依据：
-   - Settings.Global.development_force_desktop_mode_on_external_displays 当前值
-   - 设备能力 config_isDesktopModeSupported
-   - 外接屏 DisplayInfo 实际字段：logicalWidth/Height、appWidth/Height、
-     logicalDensityDpi、rotation、address
-   - dumpsys display 相关片段
+1. 「外屏开测试窗口」—— 执行系统自带的
+   am start --display <displayId> -n com.android.settings/.Settings
+   - 外接屏出现填满 4K 的独立窗口 -> 「扩展」在系统层面成立，
+     黑边来自 ColorOS 的投屏/镜像层，需要在它的多屏设置里关掉
+   - 外接屏仍然带黑边 -> ColorOS 的多屏服务在更上层接管了外接屏
 
-2. 内外屏尺寸对照（最直观的镜像证据）
-   反射 DisplayManagerGlobal.getDisplayInfo() 把内屏与外屏关键字段并列打印，
-   并给出判读：内外屏 logicalWidth/Height 完全相同 -> 高度疑似镜像；
-   不同 -> 外接屏是独立尺寸。
+2. 「找 ColorOS 多屏设置」—— 列出设备上所有投屏/多屏/外接显示相关的设置页入口
 
-3. 「关闭强制桌面模式」开关（真正的修复手段）
-   把 development_force_desktop_mode_on_external_displays 写成 0 并读回验证。
-   这是 AOSP 让外接屏被强制镜像的条件之一，关掉后外接屏在 FULLSCREEN 下
-   不再被强制镜像，才有可能独立设 4K、消除黑边。
-   同时提供「恢复默认」写回 1。
-   该设置需要 WRITE_SECURE_SETTINGS，Shizuku 的 shell 身份持有。
+## 修掉实测暴露的一个真实异常
+
+实测日志：
+  AudioManager.removePreferredDevicesForStrategy: 方法不存在
+  IAudioService.removePreferredDevicesForStrategy:
+    android.os.BadParcelableException: Parcel data not fully consumed, unread size: 4
+
+unread size: 4 = 恰好一个 int，说明该 ROM 上这个方法的 reply 格式与我按 AOSP
+推导的差一个 int。这正是独立审计给出的 F4 警告，在真机上被证实。
+
+反射主通道在该设备上已验证可用（日志：按名称匹配 STRATEGY_MEDIA (id=5) +
+读回验证通过），所以本版把读回路径改为：优先反射，只有反射不可用时才退回 AIDL，
+且所有 AIDL 读取都包在 runCatching 里，不再让异常冒泡成失败。
 
 ## 操作顺序
 
-1. 点①探测镜像状态 -> 把报告发回（重点看内外屏 logicalWidth/Height 是否相同）
-2. 点②关闭强制桌面模式 -> 看返回的 RESULT_OK 与读回值
-3. 重新插拔外接屏（或重启）让显示策略重算
-4. 再点①看镜像是否解除、分辨率列表是否出现更多选项
+1. 「外屏开测试窗口」-> 看外接屏上是否出现满屏的「设置」界面（这一步最关键）
+2. 「找 ColorOS 多屏设置」-> 把列出的入口发回
+3. 把这两步的输出发回
 
-如果②写入被 ColorOS 拒绝，报告里会体现，再换别的突破口
-（例如直接改 DisplayWindowSettings 的 enable 状态）。
-
-## 说明
-
-这一版依然没有真机验证。但与前几版不同：这次不是靠猜，
-而是把判定镜像所需的全部依据都摆到报告里，数据出来根因就明确了。
+如果第 1 步外屏出现了满屏窗口，问题就 100% 在 ColorOS 的多屏层，
+后续转向"如何关闭它的投屏/镜像"，而不是继续在 Android API 上打转。

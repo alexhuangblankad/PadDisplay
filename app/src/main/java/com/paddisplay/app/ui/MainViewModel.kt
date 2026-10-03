@@ -293,6 +293,41 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 决定性实验：用系统自带 `am start --display` 在外接屏上开一个窗口。
+     *
+     * 这是判断"外接屏能否真正独立渲染"的唯一可靠办法：
+     * 绕开本应用的所有实现，看系统自己能不能在外屏上开出满屏窗口。
+     */
+    fun launchTestWindowOnExternal() {
+        viewModelScope.launch {
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            // 用「设置」作为测试窗口，一定存在且容易辨认
+            val r = systemService.launchOnDisplay(external.displayId, "com.android.settings/.Settings")
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("独立渲染测试：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
+    /** 找 ColorOS 多屏/投屏设置入口（外接屏行为由它控制）。 */
+    fun findColorOsDisplaySettings() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val text = systemService.findDisplaySettingsActivities()
+            _ui.value = _ui.value.copy(
+                busy = false,
+                diagnostics = "=========== ColorOS 多屏设置入口 ===========\n\n$text",
+                showDiagnostics = true,
+            )
+            appendLog("已列出 ColorOS 多屏相关设置入口")
+        }
+    }
+
     fun refreshDisplays() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val overrides = settings.roleOverrides.first()

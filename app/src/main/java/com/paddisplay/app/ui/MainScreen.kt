@@ -649,6 +649,37 @@ private fun MirrorFixCard(
                 enabled = ui.shizuku.canControl && !ui.busy,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("③ Mode 自检（看硬件上报了哪些模式）") }
+
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "决定性实验（系统自带手段，绕开本应用）",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "用系统自己的 `am start --display` 在外接屏上开一个窗口。" +
+                    "如果外接屏上出现填满 4K 的独立窗口 → 说明「扩展」在系统层面成立，" +
+                    "黑边来自上层的投屏/镜像，需要在 ColorOS 的多屏设置里关闭；" +
+                    "如果仍然带黑边 → 说明 ColorOS 的多屏服务在更上层接管了外接屏。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.launchTestWindowOnExternal() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("④ 外屏开测试窗口") }
+                OutlinedButton(
+                    onClick = { vm.findColorOsDisplaySettings() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("找 ColorOS 多屏设置") }
+            }
         }
     }
 }

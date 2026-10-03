@@ -414,35 +414,42 @@ class AudioRoutingController(
     // 通道 2：手搓 IAudioService（兜底）
     // ------------------------------------------------------------------
 
-    /** 读 `List<AudioDeviceAttributes>`：AOSP 的 writeTypedList = [count] + count × [1][payload]。 */
-    private fun readTypedDeviceList(reply: Parcel): List<Any> {
+    /**
+     * 读 `List<AudioDeviceAttributes>`：AOSP 的 writeTypedList = [count] + count × [1][payload]。
+     *
+     * ⚠️ 保留但不默认使用。实测（用户设备日志）这条兜底读回会抛
+     * `BadParcelableException: Parcel data not fully consumed, unread size: 4`
+     * —— 说明该 ROM 上这个方法的 reply 与我按 AOSP 推导的格式差一个 int。
+     *
+     * 既然反射主通道在真机上已验证可用（能按名称匹配到 STRATEGY_MEDIA 并读回成功），
+     * 就没必要冒这个风险。仅在没有反射通道时才尝试，且失败必须被吞掉不冒泡。
+     */
+    private fun readTypedDeviceListSafe(reply: Parcel): List<Any> = runCatching {
         val n = reply.readInt()
         if (n <= 0) return emptyList()
         val clazz = Reflect.classForName("android.media.AudioDeviceAttributes")
         val creator = creatorOf(clazz)
         val out = ArrayList<Any>(n)
         for (i in 0 until n) {
-            val item = runCatching { creator?.createFromParcel(reply) }.getOrNull()
-            if (item == null) break // 读不出来就别继续，避免把 Parcel 读歪
+            val item = runCatching { creator?.createFromParcel(reply) }.getOrNull() ?: break
             out += item
         }
-        return out
-    }
+        out
+    }.getOrDefault(emptyList())
 
     /** 读 `List<AudioProductStrategy>`（同样格式）。 */
-    private fun readStrategyList(reply: Parcel): List<Any> {
+    private fun readStrategyList(reply: Parcel): List<Any> = runCatching {
         val n = reply.readInt()
         if (n <= 0) return emptyList()
         val clazz = Reflect.classForName("android.media.audiopolicy.AudioProductStrategy")
         val creator = creatorOf(clazz)
         val out = ArrayList<Any>(n)
         for (i in 0 until n) {
-            val item = runCatching { creator?.createFromParcel(reply) }.getOrNull()
-            if (item == null) break
+            val item = runCatching { creator?.createFromParcel(reply) }.getOrNull() ?: break
             out += item
         }
-        return out
-    }
+        out
+    }.getOrDefault(emptyList())
 
     private fun readPreferredViaAidl(strategyId: Int): List<Any>? = AidlCodec.call(
         binder = audioServiceBinder,
@@ -450,8 +457,35 @@ class AudioRoutingController(
         label = "getPreferredDevicesForStrategy($strategyId)",
         code = Codes.getPreferredDevicesForStrategy(),
         writeArgs = { it.writeInt(strategyId) },
-        readReply = { readTypedDeviceList(it) },
+        readReply = { readTypedDeviceListSafe(it) },
     ).getOrNull()
+
+    /** 反射通道是否可用（决定要不要冒险走 AIDL 兜底读回）。 */
+    private fun reflectionAvailable(strategy: Any?): Boolean {
+        if (strategy == null) return false
+        val am = audioManager() ?: return false
+        return Reflect.findMethod(
+            am.javaClass,
+            "getPreferredDevicesForStrategy",
+            strategy.javaClass,
+        ) != null
+    }
+
+    /**
+     * 读回当前首选设备。
+     *
+     * 优先反射；**只有当反射通道不可用时**才退回手搓 AIDL。
+     * 目的：避免在反射可用的情况下触发 AIDL 的格式风险
+     * （真机日志出现过 `BadParcelableException ... unread size: 4`）。
+     */
+    private fun readPreferred(strategy: Any?, strategyId: Int): List<Any>? {
+        val viaReflect = readViaAudioManager(strategy)
+        if (viaReflect != null || reflectionAvailable(strategy)) {
+            // 反射可用：以它的结果为准（空列表就是"确实没有首选设备"）
+            return viaReflect ?: emptyList()
+        }
+        return readPreferredViaAidl(strategyId)
+    }
 
     private fun pinViaAidl(deviceId: Int, strategyId: Int): Report {
         val channel = "IAudioService.setPreferredDevicesForStrategy"
@@ -540,7 +574,7 @@ class AudioRoutingController(
         }
 
         // 读回验证 —— 无论走哪条通道，都以读回为准
-        val back = readViaAudioManager(strategy) ?: readPreferredViaAidl(strategyId)
+        val back = readPreferred(strategy, strategyId)
         val shown = back?.joinToString { describeDeviceAttrs(it) } ?: "(读回为空)"
         val matched = back?.any { deviceMatches(it, deviceId) } == true
 
@@ -589,7 +623,7 @@ class AudioRoutingController(
         }
 
         // 读回确认
-        val back = readViaAudioManager(strategy) ?: readPreferredViaAidl(strategyId)
+        val back = readPreferred(strategy, strategyId)
         reports += if (back.isNullOrEmpty()) {
             Report(true, "读回验证", "媒体策略已无首选设备（恢复自动路由）")
         } else {
@@ -642,7 +676,7 @@ class AudioRoutingController(
                 strategy?.javaClass ?: Any::class.java, List::class.java) != null))
         appendLine("当前媒体输出: " + (currentMediaOutput()?.let { "${typeLabel(it.type)} id=${it.id}" } ?: "(读不到)"))
         appendLine("当前通话输出: ${currentCommunicationOutput()}")
-        val back = readViaAudioManager(strategy) ?: readPreferredViaAidl(strategyId)
+        val back = readPreferred(strategy, strategyId)
         appendLine("已固定的媒体设备: " + (if (back.isNullOrEmpty()) "(无)" else back.joinToString { describeDeviceAttrs(it) }))
         appendLine("AudioDeviceAttributes 可构造: " + (buildDeviceAttributes(
             availableOutputs().firstOrNull()?.id ?: -1,

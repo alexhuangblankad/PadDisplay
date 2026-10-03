@@ -485,6 +485,28 @@ class SystemDisplayService(
     }
 
     /**
+     * 决定性测试：用系统自带的 `am start --display` 在外接屏上启动一个 Activity。
+     * 绕开本应用实现，验证外接屏能否真正独立渲染。
+     */
+    suspend fun launchOnDisplay(displayId: Int, component: String): OpResult =
+        withContext(Dispatchers.IO) {
+            val (svc, err) = requireService()
+            if (svc == null) return@withContext err!!
+            runCatching {
+                val out = svc.launchOnDisplay(displayId, component)
+                OpResult(true, "已在外接屏启动测试窗口", out.lines().filter { it.isNotBlank() })
+            }.getOrElse { OpResult(false, "启动失败", listOf(Reflect.describe(it))) }
+        }
+
+    /** 找 ColorOS 多屏/投屏设置入口。 */
+    suspend fun findDisplaySettingsActivities(): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.findDisplaySettingsActivities() }
+                .getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /**
      * 关闭/打开「在外接屏强制桌面模式」。
      *
      * 这是 AOSP 里 `shouldForceDesktopMode()` 的开关，也是外接屏被强制镜像的条件之一。
