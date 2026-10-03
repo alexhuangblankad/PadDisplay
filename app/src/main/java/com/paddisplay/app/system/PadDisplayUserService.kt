@@ -427,6 +427,48 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         appendLine(execRaw("/system/bin/dumpsys display | grep -i -A2 'mDisplayId=$externalDisplayId' | head -n 40"))
     })
 
+    // ------------------------------------------------------------------
+    // 输入路由
+    // ------------------------------------------------------------------
+
+    private val inputController: InputRoutingController by lazy {
+        InputRoutingController(
+            inputManagerBinder = PhysicalDisplayAccess.inputManagerBinder(),
+            shellRunner = ::execRaw,
+        )
+    }
+
+    override fun listInputDevices(): String = clean(inputController.describe())
+
+    override fun bindInputToDisplay(displayId: Int): String = clean(buildString {
+        appendLine("=== 把外接输入设备绑定到 displayId=$displayId ===")
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager
+        val display = dm?.getDisplay(displayId)
+        if (display == null) {
+            appendLine("RESULT_OK=false")
+            appendLine("拿不到该 Display")
+            return@buildString
+        }
+        val reports = inputController.bindAllExternalInputToDisplay(display)
+        val ok = reports.any { it.ok && it.channel.startsWith("add") }
+        appendLine("RESULT_OK=$ok")
+        appendLine()
+        reports.forEach { appendLine(it.toText()) }
+        if (!ok) {
+            appendLine()
+            appendLine("说明：绑定失败时鼠标/触摸仍只能作用于默认屏。")
+            appendLine("这是 Android 默认行为 —— 也正因如此，系统才用「复制模式」回避了它。")
+        }
+    })
+
+    override fun clearInputAssociations(): String = clean(buildString {
+        appendLine("=== 解除输入关联，恢复默认 ===")
+        val reports = inputController.clearAllAssociations()
+        appendLine("RESULT_OK=${reports.any { it.ok }}")
+        appendLine()
+        reports.forEach { appendLine(it.toText()) }
+    })
+
     /**
      * 在外接屏上真实启动一个 Activity（决定性测试）。
      *

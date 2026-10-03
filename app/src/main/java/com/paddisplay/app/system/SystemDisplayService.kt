@@ -506,6 +506,50 @@ class SystemDisplayService(
         } ?: "UserService 未连接"
     }
 
+    // ------------------------------------------------------------------
+    // 输入路由
+    // ------------------------------------------------------------------
+
+    /** 列出输入设备（含是否外接）。 */
+    suspend fun listInputDevices(): String = withContext(Dispatchers.IO) {
+        service()?.let {
+            runCatching { it.listInputDevices() }.getOrElse { t -> "调用失败: ${Reflect.describe(t)}" }
+        } ?: "UserService 未连接"
+    }
+
+    /**
+     * 把外接输入设备绑定到指定显示器 —— **让扩展模式真正可操作**。
+     *
+     * Android 默认不把输入绑到外接屏，所以扩展模式下鼠标/触摸到不了外屏。
+     */
+    suspend fun bindInputToDisplay(displayId: Int): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+        runCatching {
+            val out = svc.bindInputToDisplay(displayId)
+            val ok = out.contains("RESULT_OK=true")
+            OpResult(
+                ok,
+                if (ok) "输入设备已绑定到外接屏" else "输入设备绑定失败",
+                out.lines().filter { it.isNotBlank() },
+            )
+        }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+
+    /** 解除输入关联，恢复默认。 */
+    suspend fun clearInputAssociations(): OpResult = withContext(Dispatchers.IO) {
+        val (svc, err) = requireService()
+        if (svc == null) return@withContext err!!
+        runCatching {
+            val out = svc.clearInputAssociations()
+            OpResult(
+                out.contains("RESULT_OK=true"),
+                "已解除输入关联",
+                out.lines().filter { it.isNotBlank() },
+            )
+        }.getOrElse { OpResult(false, "调用失败", listOf(Reflect.describe(it))) }
+    }
+
     /**
      * 关闭/打开「在外接屏强制桌面模式」。
      *

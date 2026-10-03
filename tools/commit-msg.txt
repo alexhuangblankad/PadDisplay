@@ -1,61 +1,64 @@
-v0.1.8: 决定性实验（系统自带 am start --display）+ 修掉实测 Parcel 异常
+v0.2.0: 找到根因（Android 不把输入绑到外接屏）；实现输入路由让扩展真正可用
 
-## 探针报告推翻了我此前的两个假设
+## 用户实验定位到根因
 
-从 v0.1.7 探针报告读到：
-- 外屏 logicalWidth/Height = 3840x2160，appWidth/Height = 3840x2160
-  -> 满分辨率，无缩放，app 渲染目标就是 4K
-- wm size -d 13 = "Physical size: 3840x2160"，无 Override
-  -> 没有任何强制尺寸覆盖
-- 内屏 2520x1680（rotation=1）-> 内屏 3:2
-- config_isDesktopModeSupported = false -> 本机不支持桌面模式
-- development_force_desktop_mode_on_external_displays = -999 -> 该设置在本机不存在
+用户在设备上执行了系统自带的 am start --display 13，结果：外接屏满屏 4K 显示设置，完全正常。
 
-结论：不是 Android 的 display mirroring，也不是我的强制尺寸覆盖。
-外屏拿到的是完整 4K 信号。用户说的"复制模式"发生在更上层 ——
-ColorOS 的多屏/投屏服务（dumpsys display 里 dynamicallyConfigViewer 那两行
-就是它的私有实现）。
+这把问题一分为二：
+- am start --display 13 外屏满屏 4K -> 外接屏独立渲染完全成立，Android 层面扩展可用
+- 鼠标到不了外接屏、设置页卡住无法操作 -> 输入没有绑到外接屏
+- ColorOS 默认给复制模式 -> 镜像时输入自动跟随，系统是在回避扩展模式的输入问题
 
-我此前"用 force_desktop_mode 打破镜像"的思路在本机不成立（该设置不存在）。
-这一点判断错了，不再沿这条线走。
+所以黑边和"只能用复制模式"不是分辨率问题，而是：
+Android 默认不把输入设备（触摸/鼠标/键盘）绑定到外接显示器。
+内屏触摸只对内屏生效、鼠标被限制在默认屏内，于是扩展模式下"看得见摸不着"，
+只能退回镜像。
 
-## 黑边的物理解释
+## 本版实现：输入路由
 
-内屏 2520x1680 = 3:2；显示器 3840x2160 = 16:9。
-镜像时内容按 3:2 送出去，在 16:9 面板上左右必然留黑边。
-只有让外屏拥有自己的合成表面（真扩展），黑边才会消失。
+参照参考项目 android-display-extend 的 InputRouting 思路，三级回退：
+1. addUniqueIdAssociationByDescriptor(descriptor, displayUniqueId)
+2. addUniqueIdAssociationByPort(inputPort, displayUniqueId)
+3. addPortAssociation(inputPort, displayPort)
 
-## 本版新增：决定性实验
+但按 Android 16 的实际 AIDL 修正了方法名：参考项目用的
+addUniqueIdAssociation(String, String) / removeUniqueIdAssociation(String)
+在 API 36 的 IInputManager.aidl 里已经不存在（被 ...ByPort 取代），
+照抄会在该设备上直接失效。
 
-不再靠猜，改用一个绕开本应用全部实现的系统手段：
+事务号用真实 aidl.exe 编译同序骨架验证：
+  getInputDeviceIds = 3
+  getInputDevice = 2
+  addPortAssociation = 40
+  removePortAssociation = 41
+  addUniqueIdAssociationByDescriptor = 42
+  removeUniqueIdAssociationByDescriptor = 43
+  addUniqueIdAssociationByPort = 44
+  removeUniqueIdAssociationByPort = 45
 
-1. 「外屏开测试窗口」—— 执行系统自带的
-   am start --display <displayId> -n com.android.settings/.Settings
-   - 外接屏出现填满 4K 的独立窗口 -> 「扩展」在系统层面成立，
-     黑边来自 ColorOS 的投屏/镜像层，需要在它的多屏设置里关掉
-   - 外接屏仍然带黑边 -> ColorOS 的多屏服务在更上层接管了外接屏
+显示器侧靠 DisplayInfo.uniqueId 与 DisplayInfo.address 的物理端口
+（该外屏是 port=21）关联。
 
-2. 「找 ColorOS 多屏设置」—— 列出设备上所有投屏/多屏/外接显示相关的设置页入口
+InputDevice.getLocation() 是隐藏方法，已用反射读取。
 
-## 修掉实测暴露的一个真实异常
+## 新增界面
 
-实测日志：
-  AudioManager.removePreferredDevicesForStrategy: 方法不存在
-  IAudioService.removePreferredDevicesForStrategy:
-    android.os.BadParcelableException: Parcel data not fully consumed, unread size: 4
+- 绑定输入到外屏：把外接输入设备关联到外接屏
+- 解除绑定：恢复默认（输入跟随默认屏）
+- 查看输入设备列表：确认哪些设备是可绑定的外接设备（Location 非空）
 
-unread size: 4 = 恰好一个 int，说明该 ROM 上这个方法的 reply 格式与我按 AOSP
-推导的差一个 int。这正是独立审计给出的 F4 警告，在真机上被证实。
+## 验证步骤
 
-反射主通道在该设备上已验证可用（日志：按名称匹配 STRATEGY_MEDIA (id=5) +
-读回验证通过），所以本版把读回路径改为：优先反射，只有反射不可用时才退回 AIDL，
-且所有 AIDL 读取都包在 runCatching 里，不再让异常冒泡成失败。
+1. 点「外屏开测试窗口」确认外屏能满屏 4K（此时鼠标应该还过不去）
+2. 点「绑定输入到外屏」
+3. 再试鼠标能不能移到外接屏、能不能操作外屏窗口
 
-## 操作顺序
+若成功，就得到真正的扩展桌面：无黑边 4K + 可操作。
+若失败，把输入设备列表与事件日志发回，据此调整。
 
-1. 「外屏开测试窗口」-> 看外接屏上是否出现满屏的「设置」界面（这一步最关键）
-2. 「找 ColorOS 多屏设置」-> 把列出的入口发回
-3. 把这两步的输出发回
+## 诚实说明
 
-如果第 1 步外屏出现了满屏窗口，问题就 100% 在 ColorOS 的多屏层，
-后续转向"如何关闭它的投屏/镜像"，而不是继续在 Android API 上打转。
+- 依然没有真机验证，输入路由是否在 ColorOS 上放行需要实测。
+- 输入绑定在部分设备上需要 INTERNAL_SYSTEM_WINDOW 或类似权限；
+  Shizuku 的 shell 身份通常够用，若被拦截报告里会写出。
+- 绑定是系统级状态，重插显示器或重启即恢复默认；本应用也提供解除绑定。

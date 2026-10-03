@@ -97,6 +97,26 @@ interface IPadDisplayService {
     /** 找出 ColorOS 的多屏 / 投屏 / 外接显示相关设置页入口。 */
     String findDisplaySettingsActivities();
 
+    // ------------------------------------------------------------------
+    // 输入路由（让扩展模式真正可操作）
+    //
+    // Android 默认不把输入设备绑定到外接屏：内屏触摸只对内屏生效、
+    // 鼠标被限制在默认屏内。所以「扩展」能渲染但操作不了。
+    // 这些方法把外接输入设备（触摸/鼠标/键盘）关联到指定显示器。
+    // ------------------------------------------------------------------
+
+    /** 列出输入设备及其是否外接。 */
+    String listInputDevices();
+
+    /**
+     * 把外接输入设备全部绑定到指定显示器。
+     * 三级回退：按描述符关联 uniqueId → 按端口关联 uniqueId → 按端口关联物理端口。
+     */
+    String bindInputToDisplay(int displayId);
+
+    /** 解除所有输入关联，恢复默认（输入跟随默认屏）。 */
+    String clearInputAssociations();
+
     /** 通过 IDisplayManager / DisplayManager 设置用户首选 Mode（真正切换硬件时序）。 */
     String setUserPreferredDisplayMode(int displayId, int modeId, int width, int height, float refreshRate);
 

@@ -328,6 +328,50 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * 把外接输入设备（触摸/鼠标/键盘）绑定到外接屏。
+     *
+     * 这是「扩展模式能用」的关键一步：Android 默认不把输入绑到外接屏，
+     * 所以扩展模式下能渲染但鼠标/触摸到不了外屏 —— 系统正是因此才用「复制模式」。
+     */
+    fun bindInputToExternal() {
+        viewModelScope.launch {
+            val external = systemService.primaryExternal()
+            if (external == null) {
+                _ui.value = _ui.value.copy(lastResult = "❌ 未检测到外接显示器")
+                return@launch
+            }
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.bindInputToDisplay(external.displayId)
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("绑定输入到外接屏：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
+    /** 解除输入绑定，恢复默认。 */
+    fun clearInputBindings() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val r = systemService.clearInputAssociations()
+            _ui.value = _ui.value.copy(busy = false, lastResult = r.toText())
+            appendLog("解除输入绑定：${r.toText().replace("\n", " / ")}")
+        }
+    }
+
+    /** 列出输入设备（用来确认哪些设备是可绑定的外接设备）。 */
+    fun listInputDevices() {
+        viewModelScope.launch {
+            _ui.value = _ui.value.copy(busy = true)
+            val text = systemService.listInputDevices()
+            _ui.value = _ui.value.copy(
+                busy = false,
+                diagnostics = "=========== 输入设备 ===========\n\n$text",
+                showDiagnostics = true,
+            )
+            appendLog("已列出输入设备")
+        }
+    }
+
     fun refreshDisplays() {
         viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
             val overrides = settings.roleOverrides.first()

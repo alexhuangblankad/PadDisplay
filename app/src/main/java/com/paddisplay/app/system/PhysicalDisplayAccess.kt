@@ -207,6 +207,21 @@ object PhysicalDisplayAccess {
         return null
     }
 
+    /**
+     * 取 `IInputManager` 的 Binder。
+     * 用于把输入设备（触摸/鼠标/键盘）路由到外接屏 ——
+     * 这是「扩展模式能用」的前提：Android 默认不把输入绑到外接屏。
+     * 服务名是 `"input"`。
+     */
+    fun inputManagerBinder(): IBinder? {
+        Reflect.classForName("android.os.ServiceManager")?.let { clazz ->
+            Reflect.findMethod(clazz, "getService", String::class.java)?.let { m ->
+                runCatching { return m.invoke(null, "input") as? IBinder }
+            }
+        }
+        return null
+    }
+
     fun describe(): String = buildString {
         val sc = Reflect.classForName(SURFACE_CONTROL)
         appendLine("SurfaceControl.getPhysicalDisplayIds: ${Reflect.findMethod(sc, "getPhysicalDisplayIds") != null}")

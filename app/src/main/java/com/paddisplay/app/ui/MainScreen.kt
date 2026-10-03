@@ -680,6 +680,44 @@ private fun MirrorFixCard(
                     modifier = Modifier.weight(1f),
                 ) { Text("找 ColorOS 多屏设置") }
             }
+
+            // ---------------- 输入绑定：扩展模式可操作的关键 ----------------
+            Spacer(Modifier.height(10.dp))
+            HorizontalDivider()
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "⑤ 把输入绑定到外接屏（扩展模式能不能用的关键）",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "实测结论：外接屏**能**独立满屏 4K 渲染，但 Android 默认**不把输入设备" +
+                    "绑定到外接屏** —— 所以扩展模式下鼠标到不了外屏、也操作不了，" +
+                    "系统才用「复制模式」回避了这个坑。\n\n" +
+                    "绑定成功后，鼠标/触摸就能作用到外接屏，你才真正拥有无黑边的扩展桌面。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { vm.bindInputToExternal() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("绑定输入到外屏") }
+                OutlinedButton(
+                    onClick = { vm.clearInputBindings() },
+                    enabled = ui.shizuku.canControl && !ui.busy,
+                    modifier = Modifier.weight(1f),
+                ) { Text("解除绑定") }
+            }
+            Spacer(Modifier.height(6.dp))
+            OutlinedButton(
+                onClick = { vm.listInputDevices() },
+                enabled = ui.shizuku.canControl && !ui.busy,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("查看输入设备列表") }
         }
     }
 }
