@@ -1,5 +1,10 @@
 # PadDisplay 交接文档
 
+> **v1.0.5 / versionCode 29**：用户真机确认 4K 全屏成功；Alt+Shift/F9 未唤出。新增外屏底边 8dp 热区悬停两秒或点击唤出，左右各留 24dp；通知增加唤出导航。
+> 辅助服务连接时重新声明键过滤请求，组合键同时追踪实际 modifier down/up；无法证明 ColorOS 已派发按键。
+> 全屏浮层先显示再尝试焦点对话框，后者失败不会阻止前者；热区不申请焦点、不捕获鼠标，不改串流输入。捕获鼠标或应用隐藏浮层时 hover 不保证可达，保留平板通知备用。
+> 用户截图：mode=1 / enable_freeform_support=0 / force_desktop_mode_on_external_displays=0 / feature=false，小窗请求失败；不能宣称自由窗口已修复。
+
 > **2026-10-04 / v1.0.4 / versionCode 28**：对照 Taskbar 与 Android 16 Settings.java，确认旧代码误将常量名作数据库键。
 > 真实键为 enable_freeform_support / force_desktop_mode_on_external_displays 等，修正探测与手动设置按钮；不在主机启动时自动写入。
 > 历史 development_ 前缀键的读写结果不能证明真实设置状态、写入权限或 ROM 删除功能，旧推断作废。

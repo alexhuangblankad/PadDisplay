@@ -62,6 +62,10 @@ class DesktopService : Service() {
     private var collapsed = false
     private var panelSignature = ""
     private var revealUntil = 0L
+    private var edgeView: View? = null
+    private var edgeManager: WindowManager? = null
+    private val edgeHandler = Handler(Looper.getMainLooper())
+    private val edgeReveal = Runnable { send(this, "escape") }
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) { scope.launch { delay(900); mutex.withLock {
@@ -69,7 +73,7 @@ class DesktopService : Service() {
         } } }
         override fun onDisplayRemoved(displayId: Int) {
             if (target?.displayId == displayId) scope.launch { mutex.withLock {
-                removeOverlay()
+                removeEdge(); removeOverlay()
                 val restored = withContext(Dispatchers.IO) {
                     val mouse = runCatching { ShizukuManager.service?.releaseDesktopSession(lifetime) ?: "Shizuku 已断开，鼠标解绑未确认" }
                         .getOrElse { "鼠标恢复失败：${it.message}" }
@@ -85,7 +89,7 @@ class DesktopService : Service() {
         }
         override fun onDisplayChanged(displayId: Int) {
             if (displayId == target?.displayId) scope.launch { mutex.withLock {
-                runCatching { removeOverlay(); refreshTasks() }.onFailure { message("外屏刷新失败：${it.message}") }
+                runCatching { removeEdge(); removeOverlay(); refreshTasks() }.onFailure { message("外屏刷新失败：${it.message}") }
             } }
         }
     }
@@ -106,9 +110,10 @@ class DesktopService : Service() {
         nm.createNotificationChannel(NotificationChannel("desktop", "外屏桌面", NotificationManager.IMPORTANCE_LOW))
         val open = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         val stop = PendingIntent.getService(this, 1, Intent(this, DesktopService::class.java).putExtra("action", "stop"), PendingIntent.FLAG_IMMUTABLE)
+        val rescue = PendingIntent.getService(this, 2, Intent(this, DesktopService::class.java).putExtra("action", "escape"), PendingIntent.FLAG_IMMUTABLE)
         val notification = Notification.Builder(this, "desktop").setSmallIcon(com.paddisplay.app.R.mipmap.ic_launcher)
             .setContentTitle("PadDisplay 主机模式").setContentText("外屏桌面运行中 · 点击打开控制面板")
-            .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, "退出并恢复", stop).build()).build()
+            .setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null, "唤出导航", rescue).build()).addAction(Notification.Action.Builder(null, "退出并恢复", stop).build()).build()
         startForeground(24, notification)
         ShizukuManager.init(this)
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, Handler(Looper.getMainLooper()))
@@ -152,8 +157,12 @@ class DesktopService : Service() {
                         val d = requireTarget()
                         revealUntil = android.os.SystemClock.uptimeMillis() + 15000
                         val expiration = revealUntil
-                        startActivity(Intent(this@DesktopService, EscapeNavigationActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                            ActivityOptions.makeBasic().setLaunchDisplayId(d.displayId).toBundle())
+                        panelSignature = ""
+                        renderTaskbar() // Reveal overlays even if ColorOS rejects the dialog launch.
+                        runCatching {
+                            startActivity(Intent(this@DesktopService, EscapeNavigationActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                ActivityOptions.makeBasic().setLaunchDisplayId(d.displayId).toBundle())
+                        }.onFailure { message("导航浮层已请求；焦点对话框启动失败：${it.message}") }
                         refreshTasks()
                         scope.launch {
                             delay(15000)
@@ -332,12 +341,13 @@ class DesktopService : Service() {
         val d = target ?: return
         val state = DesktopState.state.value
         val revealed = android.os.SystemClock.uptimeMillis() < revealUntil
+        updateEdge(!state.desktopVisible && !revealed)
         val foregroundTask = state.tasks.firstOrNull { it.id == state.activeTaskId } ?: state.tasks.firstOrNull()
         val fullscreen = foregroundTask != null && foregroundTask.mode == 1
         val immersive = store.hideForGames && state.tasks.firstOrNull()?.packageName?.let {
             it.contains("limelight", true) || it.contains("moonlight", true)
         } == true
-        if (!Settings.canDrawOverlays(this) || ((immersive || fullscreen) && !revealed) || state.desktopVisible) {
+        if (!Settings.canDrawOverlays(this) || ((immersive || fullscreen) && !revealed) || (state.desktopVisible && !revealed)) {
             removeOverlay()
             DesktopState.state.update { it.copy(overlayReady = false) }
             return
@@ -448,6 +458,55 @@ class DesktopService : Service() {
         } catch (t: Throwable) { message("任务栏显示失败：${t.message}") }
     }
 
+    /** Small bottom-only input target. It never requests focus or pointer capture. */
+    private fun updateEdge(show: Boolean) {
+        if (!show || !Settings.canDrawOverlays(this)) { removeEdge(); return }
+        if (edgeView != null) return
+        val d = target ?: return
+        try {
+            val display = getSystemService(DisplayManager::class.java).getDisplay(d.displayId) ?: return
+            val ctx = createDisplayContext(display).let {
+                if (android.os.Build.VERSION.SDK_INT >= 30) it.createWindowContext(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, null) else it
+            }
+            val density = ctx.resources.displayMetrics.density
+            fun dp(n: Int) = (n * density).toInt().coerceAtLeast(1)
+            val wm = ctx.getSystemService(WindowManager::class.java)
+            val view = android.widget.FrameLayout(ctx).apply {
+                contentDescription = "全屏导航：鼠标在底边停留两秒，或点击底边"
+                setBackgroundColor(Color.argb(12, 128, 128, 128))
+                addView(View(ctx).apply { setBackgroundColor(Color.argb(150, 180, 190, 205)) },
+                    android.widget.FrameLayout.LayoutParams(dp(80), dp(3), Gravity.CENTER))
+                setOnHoverListener { _, event ->
+                    when (event.actionMasked) {
+                        android.view.MotionEvent.ACTION_HOVER_ENTER -> {
+                            edgeHandler.removeCallbacks(edgeReveal)
+                            edgeHandler.postDelayed(edgeReveal, 2000)
+                        }
+                        android.view.MotionEvent.ACTION_HOVER_EXIT -> edgeHandler.removeCallbacks(edgeReveal)
+                    }
+                    true
+                }
+                setOnClickListener { edgeHandler.removeCallbacks(edgeReveal); send(this@DesktopService, "escape") }
+            }
+            val width = ctx.resources.displayMetrics.widthPixels
+            val params = WindowManager.LayoutParams((width - dp(48)).coerceAtLeast(dp(80)), dp(8),
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN, PixelFormat.TRANSLUCENT).apply {
+                gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL
+                if (android.os.Build.VERSION.SDK_INT >= 30) setFitInsetsTypes(0)
+            }
+            wm.addView(view, params)
+            edgeManager = wm; edgeView = view
+        } catch (t: Throwable) { message("底边导航入口显示失败：${t.message}") }
+    }
+
+    private fun removeEdge() {
+        edgeHandler.removeCallbacks(edgeReveal)
+        edgeView?.let { runCatching { edgeManager?.removeViewImmediate(it) } }
+        edgeView = null; edgeManager = null
+    }
+
     private fun removeOverlay() {
         decorations?.clear(); decorations = null
         overlay?.let { runCatching { windowManager?.removeViewImmediate(it) } }
@@ -488,7 +547,7 @@ class DesktopService : Service() {
     }
 
     private suspend fun finishSession() {
-        stopping = true; revealUntil = 0L; removeOverlay()
+        stopping = true; revealUntil = 0L; removeEdge(); removeOverlay()
         DesktopState.state.update { it.copy(running = false) }
         delay(250) // Let the external desktop finish before releasing its native display content.
         val result = cleanup()
@@ -497,7 +556,7 @@ class DesktopService : Service() {
         stopForeground(STOP_FOREGROUND_REMOVE); stopSelf()
     }
     override fun onDestroy() {
-        removeOverlay()
+        removeEdge(); removeOverlay()
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         getSystemService(InputManager::class.java).unregisterInputDeviceListener(inputListener)
         if (!stopping) CoroutineScope(Dispatchers.IO).launch {

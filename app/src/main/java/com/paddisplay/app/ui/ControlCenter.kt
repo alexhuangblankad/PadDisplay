@@ -54,12 +54,12 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
                         SettingsToggle("自由窗口启动", "系统支持时，应用以可调整窗口打开。", freeform) { freeform = it; store.freeform = it }
                         SettingsToggle("原外屏重连后恢复", "只匹配同一显示器。", reconnect) { reconnect = it; store.autoReconnect = it }
                         SettingsToggle("Moonlight 自动隐藏 Dock", "保留系统原生鼠标输入。", hideGames) { hideGames = it; store.hideForGames = it }
-                        Text("全屏默认隐藏 Dock、三键和窗口控件。Alt+Shift 或 F9 临时唤出，15 秒后隐藏；保留系统侧边返回。", style = MaterialTheme.typography.bodySmall)
+                        Text("全屏默认隐藏 Dock、三键和窗口控件。鼠标在底边停留两秒或点击底边唤出，15 秒后隐藏；Alt+Shift / F9 为快捷入口。", style = MaterialTheme.typography.bodySmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton({ context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("开启全屏导航快捷键") }
                             TextButton({ DesktopService.send(context, "escape") }, enabled = state.running) { Text("唤出全屏导航") }
                         }
-                        Text("需启用快捷键辅助服务；Alt/Shift 按下与抬起原样放行，单独左 Alt 不触发，不处理鼠标。Fn+F9 需键盘上报 F9。", style = MaterialTheme.typography.bodySmall)
+                        Text("快捷键需启用辅助服务；单独左 Alt 放行。串流捕获鼠标时可能无法底边悬停，可在平板主机模式通知中点“唤出导航”。Fn+F9 需键盘上报 F9。", style = MaterialTheme.typography.bodySmall)
                     } }
                     item { SettingsGroup("权限与鼠标") {
                         Text(ui.shizuku.message, color = MaterialTheme.colorScheme.onSurfaceVariant)
