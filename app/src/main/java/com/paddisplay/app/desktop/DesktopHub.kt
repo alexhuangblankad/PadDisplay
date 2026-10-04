@@ -99,6 +99,10 @@ fun TaskPanel(state: DesktopSnapshot, modifier: Modifier = Modifier) {
             Text("外屏窗口", style = MaterialTheme.typography.headlineSmall)
             Text("系统自由窗口可调整位置和尺寸；全屏应用仍可切换或关闭。", style = MaterialTheme.typography.bodySmall)
             state.taskError?.let { Text("任务读取失败：$it", color = MaterialTheme.colorScheme.error) }
+            if (state.running && state.message != "主机模式未启动") {
+                Text(state.message, style = MaterialTheme.typography.bodySmall,
+                    color = if (state.message.contains("RESULT_OK=false")) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+            }
             if (state.tasks.isEmpty() && state.taskError == null) Text("暂无外屏应用窗口")
         }
         items(state.tasks, key = { it.id }) { task ->
@@ -106,7 +110,7 @@ fun TaskPanel(state: DesktopSnapshot, modifier: Modifier = Modifier) {
             Card {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(app?.label ?: task.packageName, fontWeight = FontWeight.Bold)
-                    Text("${if (task.mode == 5) "自由窗口" else "系统窗口模式 ${task.mode}"} · ${task.right - task.left} × ${task.bottom - task.top}",
+                    Text("任务 ${task.id} · ${if (task.mode == 5) "自由窗口模式" else "系统窗口模式 ${task.mode}"} · (${task.left}, ${task.top})–(${task.right}, ${task.bottom})",
                         style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Button({ DesktopService.send(context, "focus", taskId = task.id) }, enabled = state.running) { Text("切换") }

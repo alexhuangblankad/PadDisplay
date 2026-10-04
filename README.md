@@ -1,8 +1,8 @@
-# PadDisplay v1.0.1
+# PadDisplay v1.0.2
 
 把 Android 平板的**物理外接显示器**变成桌面工作空间。面向 OPPO Pad Mini / Android 16 / ColorOS，使用 Shizuku 提供系统控制权限，无需 Root。
 
-[下载 v1.0.1 APK](https://github.com/alexhuangblankad/PadDisplay/releases/tag/v1.0.1) · [使用指南](docs/desktop-guide.md) · [交接与源码证据](docs/HANDOFF.md)
+[下载 v1.0.2 APK](https://github.com/alexhuangblankad/PadDisplay/releases/tag/v1.0.2) · [使用指南](docs/desktop-guide.md) · [交接与源码证据](docs/HANDOFF.md)
 
 ![桌面布局预览](docs/images/desktop-preview.png)
 
@@ -41,7 +41,7 @@
 
 用户已反馈此前版本的**鼠标归属、缩放和显示正常**。此前 v1.0.0 通过 release 构建、签名检查、模拟器安装、桌面 / 控制中心亮暗布局预览、实际音量调整、5000 组窗口布局与 DPI 异常路径检查。
 
-v1.0.1 另外检查了无 Google / 空收藏的 OPPO 应用列表和新版桌面布局。本次无法连接 OPPO 真机。新增外屏 Dock、自由窗口装饰、平板亮度和应用回迁仍需 ColorOS 实测；构建与 UI 预览不能证明厂商系统允许这些接口。自由窗口不支持时返回明确失败，不将全屏回退当作自由窗口成功。
+v1.0.2 修正了应用启动后遗漏窗口边界设置的问题；切换自由窗口同时验证模式与边界，并在失败后通过系统最近任务接口再次请求。用户反馈 v1.0.1 所有应用窗口缩放无效，本版尚无真机成功证据。v1.0.1 另外检查了无 Google / 空收藏的 OPPO 应用列表和新版桌面布局。本次无法连接 OPPO 真机。新增外屏 Dock、自由窗口装饰、平板亮度和应用回迁仍需 ColorOS 实测；构建与 UI 预览不能证明厂商系统允许这些接口。自由窗口不支持时返回明确失败，不将全屏回退当作自由窗口成功。
 
 全屏快捷键基于 Android 的 [按键过滤能力](https://developer.android.com/reference/android/accessibilityservice/AccessibilityServiceInfo#FLAG_REQUEST_FILTER_KEY_EVENTS)，需用户在系统设置开启该服务。若键盘把 Fn+F9 处理成媒体键而未上报 F9，此组合无法触发；系统侧边返回以及 Moonlight / UU 的实际捕获行为仍需对应设备与客户端验证。平板上的高级设置也提供手动唤出入口。
 
@@ -67,4 +67,4 @@ $env:ANDROID_HOME = 'D:\android-sdk'
 - [完整交接文档](docs/HANDOFF.md)：历史诊断、源码证据与当前状态。
 - [桌面使用与真机验收](docs/desktop-guide.md)。
 - [输入关联验证](docs/input-routing-validation.md)。
-- [v1.0.1 发布说明](tools/release-notes-1.0.1.md)。
+- [v1.0.2 发布说明](tools/release-notes-1.0.2.md)。

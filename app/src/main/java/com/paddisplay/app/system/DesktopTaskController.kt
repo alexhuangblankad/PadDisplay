@@ -1,6 +1,7 @@
 package com.paddisplay.app.system
 
 import android.content.ComponentName
+import android.app.ActivityOptions
 import android.content.Context
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
@@ -88,7 +89,7 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
         val t = found ?: error("启动未获外屏任务读回确认：$output")
         launchedTasks += number(t, "taskId")
         val actualMode = mode(t)
-        if (freeform && actualMode != 5) {
+        if (freeform) {
             val converted = action(id, number(t, "taskId"), "window")
             check(converted.startsWith("RESULT_OK=true")) { "应用已在外屏打开，但自由窗口请求被系统拒绝：$converted" }
             return@result "外屏应用已打开，自由窗口模式已读回"
@@ -141,13 +142,37 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
                     ?: error("无 WindowOrganizer")
                 val apply = Reflect.findMethod(organizer.javaClass, "applyTransaction", transactionClass)
                     ?: error("系统未提供窗口组织事务")
-                apply.invoke(organizer, transaction)
+                val transactionError = runCatching { apply.invoke(organizer, transaction) }.exceptionOrNull()
+                fun adopted(): Boolean {
+                    val actual = task(id, taskId)
+                    return mode(actual) == targetMode && (targetMode == 1 || bounds(actual) == desired)
+                }
                 var verified = false
                 repeat(15) {
-                    if (!verified) { SystemClock.sleep(100); verified = mode(task(id, taskId)) == targetMode }
+                    if (!verified) { SystemClock.sleep(100); verified = adopted() }
                 }
-                check(verified) { "系统未采用请求的窗口模式，应用或 ROM 不支持该操作" }
-                if (targetMode == 5) "自由窗口模式已读回" else "全屏模式已读回"
+                // Re-resolve the task's launch root through the framework, without changing
+                // display-wide policy or forcing a non-resizable app to become resizable.
+                var retry = "未重试"
+                if (!verified) {
+                    retry = runCatching {
+                        val options = ActivityOptions.makeBasic().setLaunchDisplayId(id).setLaunchBounds(desired)
+                        Reflect.findMethod(options.javaClass, "setLaunchWindowingMode", Int::class.javaPrimitiveType)
+                            ?.invoke(options, targetMode) ?: error("无窗口启动选项")
+                        val restart = Reflect.findMethod(svc.javaClass, "startActivityFromRecents", Int::class.javaPrimitiveType, Bundle::class.java)
+                            ?: error("无任务恢复接口")
+                        restart.invoke(svc, taskId, options.toBundle())
+                        repeat(15) { if (!verified) { SystemClock.sleep(100); verified = adopted() } }
+                        "系统任务恢复请求已提交"
+                    }.getOrElse { Reflect.describe(it) }
+                }
+                val actual = task(id, taskId)
+                check(verified) {
+                    "自由窗口/全屏未确认：task=$taskId，mode=${mode(actual)}，bounds=${bounds(actual)}，请求=$desired；$retry；" +
+                        "事务=${transactionError?.let { Reflect.describe(it) } ?: "已提交"}；" +
+                        "系统 freeform feature=${context?.packageManager?.hasSystemFeature("android.software.freeform_window_management")}；未修改厂商配置"
+                }
+                if (targetMode == 5) "自由窗口模式及边界已读回：task=$taskId，bounds=${bounds(actual)}" else "全屏模式已读回"
             }
             else -> error("未知任务操作")
         }
