@@ -57,7 +57,6 @@ fun MainScreen(vm: MainViewModel, ui: MainViewModel.UiState) {
                         Text("全屏默认隐藏 Dock、三键和窗口控件。鼠标在底边停留两秒或点击底边唤出，15 秒后隐藏；Alt+Shift / F9 为快捷入口。", style = MaterialTheme.typography.bodySmall)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedButton({ context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }) { Text("开启全屏导航快捷键") }
-                            TextButton({ DesktopService.send(context, "escape") }, enabled = state.running) { Text("唤出全屏导航") }
                         }
                         Text("快捷键需启用辅助服务；单独左 Alt 放行。串流捕获鼠标时可能无法底边悬停，可在平板主机模式通知中点“唤出导航”。Fn+F9 需键盘上报 F9。", style = MaterialTheme.typography.bodySmall)
                     } }

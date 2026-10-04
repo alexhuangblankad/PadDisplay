@@ -158,11 +158,11 @@ class DesktopService : Service() {
                         revealUntil = android.os.SystemClock.uptimeMillis() + 15000
                         val expiration = revealUntil
                         panelSignature = ""
-                        renderTaskbar() // Reveal overlays even if ColorOS rejects the dialog launch.
+                        removeOverlay() // The focusable bottom taskbar is the sole rescue UI.
                         runCatching {
                             startActivity(Intent(this@DesktopService, EscapeNavigationActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                                 ActivityOptions.makeBasic().setLaunchDisplayId(d.displayId).toBundle())
-                        }.onFailure { message("导航浮层已请求；焦点对话框启动失败：${it.message}") }
+                        }.onFailure { message("全屏导航启动失败，请在首页重试：${it.message}") }
                         refreshTasks()
                         scope.launch {
                             delay(15000)
@@ -342,6 +342,7 @@ class DesktopService : Service() {
         val state = DesktopState.state.value
         val revealed = android.os.SystemClock.uptimeMillis() < revealUntil
         updateEdge(!state.desktopVisible && !revealed)
+        if (revealed) { removeOverlay(); return }
         val foregroundTask = state.tasks.firstOrNull { it.id == state.activeTaskId } ?: state.tasks.firstOrNull()
         val fullscreen = foregroundTask != null && foregroundTask.mode == 1
         val immersive = store.hideForGames && state.tasks.firstOrNull()?.packageName?.let {

@@ -20,23 +20,31 @@ class EscapeNavigationActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         window.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-        // Keep the focus-release navigation above the temporarily revealed Dock.
-        window.attributes = window.attributes.apply { y = (104 * resources.displayMetrics.density).toInt() }
+        // A single bottom taskbar replaces the separate rescue dialog and overlays.
+        window.attributes = window.attributes.apply { y = 0 }
         setContent { PadTheme(this) {
             val state by DesktopState.state.collectAsState()
             LaunchedEffect(state.running) { if (!state.running) finishAndRemoveTask() }
             LaunchedEffect(Unit) { delay(15000); finish() }
-            Surface(shape = RoundedCornerShape(24.dp), shadowElevation = 12.dp) {
-                Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    Text("全屏导航", style = MaterialTheme.typography.labelMedium, modifier = Modifier.padding(start = 12.dp))
-                    Row {
-                        TextButton({ finish(); DesktopService.send(this@EscapeNavigationActivity, "back") }) { Text("返回") }
-                        TextButton({ finish(); DesktopService.send(this@EscapeNavigationActivity, "home") }) { Text("Home") }
-                        TextButton({ finish(); DesktopService.send(this@EscapeNavigationActivity, "tasks") }) { Text("多任务") }
+            Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 6.dp) {
+                Row(Modifier.fillMaxWidth().height(64.dp).padding(horizontal = 16.dp),
+                    verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    fun act(action: String, component: String? = null) {
+                        finish(); DesktopService.send(this@EscapeNavigationActivity, action, component)
                     }
+                    TextButton({ act("launchpad") }) { Text("应用") }
+                    DockApps.select(state.apps, state.favorites, 8).forEach { app ->
+                        androidx.compose.material3.IconButton({ act("launch", app.component) }) { AppIcon(app, Modifier.size(34.dp)) }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    TextButton({ act("controls") }) { Text("☷") }
+                    Text(java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date()), style = MaterialTheme.typography.labelMedium)
+                    TextButton({ act("back") }) { Text("‹") }
+                    TextButton({ act("home") }) { Text("⌂") }
+                    TextButton({ act("tasks") }) { Text("▣") }
                 }
             }
         } }
-        window.setLayout(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+        window.setLayout(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
     }
 }

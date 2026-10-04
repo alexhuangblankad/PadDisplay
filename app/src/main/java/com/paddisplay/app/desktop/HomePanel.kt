@@ -43,6 +43,8 @@ fun DesktopHub(vm: MainViewModel, ui: MainViewModel.UiState, onControls: () -> U
                     color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
             }
         }
+        OutlinedButton({ DesktopService.send(context, "escape") }, enabled = state.running && !ui.busy,
+            modifier = Modifier.fillMaxWidth()) { Text("唤出全屏导航") }
         AppGrid(ui.launchableApps.ifEmpty { state.apps }, store.favorites(),
             ui.shizuku.canControl && ui.externalConnected && !ui.busy,
             { if (state.running) DesktopService.send(context, "launch", it.component) else vm.launchAppOnExternal(it) },
