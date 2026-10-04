@@ -3,6 +3,8 @@ package com.paddisplay.app.system
 import android.content.ComponentName
 import android.app.ActivityOptions
 import android.content.Context
+import android.content.Intent
+import android.content.res.Configuration
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.os.Bundle
@@ -51,6 +53,12 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
         val window = Reflect.getField(config, "windowConfiguration").getOrThrow()
         return Reflect.findMethod(window?.javaClass, "getWindowingMode")?.invoke(window) as? Int ?: -1
     }
+    private fun configurationLabel(task: Any): String {
+        val config = Reflect.getField(task, "configuration").getOrThrow() as Configuration
+        val wc = Reflect.getField(config, "windowConfiguration").getOrThrow()
+        val app = Reflect.findMethod(wc?.javaClass, "getAppBounds")?.invoke(wc)
+        return "display=${number(task, "displayId")} · ${config.screenWidthDp}×${config.screenHeightDp} dp · DPI ${config.densityDpi} · appBounds=$app"
+    }
     private fun task(id: Int, taskId: Int) = rawTasks(id).firstOrNull { number(it, "taskId") == taskId }
         ?: error("任务已关闭或不在目标外屏")
 
@@ -63,6 +71,7 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
             val rect = bounds(t)
             array.put(JSONObject().put("id", number(t, "taskId")).put("package", comp.packageName)
                 .put("component", comp.flattenToString()).put("mode", mode(t))
+                .put("configuration", configurationLabel(t))
                 .put("visible", Reflect.getField(t, "isVisible").getOrNull() as? Boolean ?: false)
                 .put("left", rect.left).put("top", rect.top).put("right", rect.right).put("bottom", rect.bottom))
         }
@@ -78,7 +87,31 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
         display(id)
         val comp = ComponentName.unflattenFromString(component) ?: error("无效应用组件")
         require(Regex("[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+").matches(comp.flattenToString()))
-        val output = shell("/system/bin/am start --display $id ${if (freeform) "--windowingMode 5" else "--windowingMode 1"} -n ${comp.flattenToString()}")
+        val space = CoordinateSpaceProbe(shell).injectionSpace(id) ?: error("外屏逻辑工作区不可读取")
+        check(space.raw.startsWith("cur=")) { "缺少当前外屏逻辑尺寸，未使用内屏尺寸猜测" }
+        // Supply target-display options at launch time, before the framework resolves
+        // the task/root and activity configuration. Shell am start has no bounds option.
+        val direct = runCatching {
+            val options = ActivityOptions.makeBasic().setLaunchDisplayId(id)
+            Reflect.findMethod(options.javaClass, "setLaunchWindowingMode", Int::class.javaPrimitiveType)
+                ?.invoke(options, if (freeform) 5 else 1) ?: error("无窗口启动选项")
+            if (freeform) options.setLaunchBounds(Rect(space.width/6, space.height/6, space.width*5/6, space.height*5/6))
+            val user = Regex("(?m)^\\d+$").find(shell("/system/bin/am get-current-user").trim())?.value?.toInt()
+                ?: error("当前用户不可读取")
+            val method = Reflect.findMethod(service().javaClass, "startActivityAsUser",
+                Class.forName("android.app.IApplicationThread"), String::class.java, String::class.java,
+                Intent::class.java, String::class.java, android.os.IBinder::class.java, String::class.java,
+                Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Class.forName("android.app.ProfilerInfo"),
+                Bundle::class.java, Int::class.javaPrimitiveType) ?: error("无目标配置启动接口")
+            val status = method.invoke(service(), null, "com.android.shell", null,
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(comp).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                null, null, null, 0, 0, null, options.toBundle(), user) as Int
+            check(status >= 0) { "系统启动拒绝：$status" }
+            "ActivityOptions 启动结果=$status"
+        }
+        val output = direct.getOrElse {
+            shell("/system/bin/am start --display $id ${if (freeform) "--windowingMode 5" else "--windowingMode 1"} -n ${comp.flattenToString()}")
+        }
         check(output.isNotBlank() && !Regex("Error|Exception|\\[exit=", RegexOption.IGNORE_CASE).containsMatchIn(output)) { output }
         var found: Any? = null
         for (attempt in 0 until 15) {
@@ -92,9 +125,9 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
         if (freeform) {
             val converted = action(id, number(t, "taskId"), "window")
             check(converted.startsWith("RESULT_OK=true")) { "应用已在外屏打开，但自由窗口请求被系统拒绝：$converted" }
-            return@result "外屏应用已打开，自由窗口模式已读回"
+            return@result "外屏逻辑工作区=${space.label}\n$converted\n${configurationLabel(task(id, number(t, "taskId")))}"
         }
-        "外屏任务已读回：${comp.packageName}，windowingMode=$actualMode\n" +
+        "外屏逻辑工作区=${space.label}\n外屏任务已读回：${comp.packageName}，windowingMode=$actualMode\n${configurationLabel(t)}\n" +
             if (freeform && actualMode != 5) "系统未采用自由窗口；当前以实际窗口模式运行。" else ""
     }
 

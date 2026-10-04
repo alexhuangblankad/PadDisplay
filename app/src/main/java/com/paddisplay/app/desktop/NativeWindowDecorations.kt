@@ -21,8 +21,13 @@ class NativeWindowDecorations(private val context: Context, private val wm: Wind
     private fun dp(n: Int) = (n * scale).toInt()
     private fun params(w: Int, h: Int, x: Int, y: Int) = WindowManager.LayoutParams(w, h,
         WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
-        PixelFormat.TRANSLUCENT).apply { gravity = Gravity.TOP or Gravity.LEFT; this.x = x; this.y = y }
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+        PixelFormat.TRANSLUCENT).apply {
+            gravity = Gravity.TOP or Gravity.LEFT; this.x = x; this.y = y
+            // Task bounds use full-display coordinates; do not apply status-bar offsets again.
+            if (android.os.Build.VERSION.SDK_INT >= 30) setFitInsetsTypes(0)
+        }
 
     fun show(state: DesktopSnapshot, width: Int, height: Int, dark: Boolean) {
         state.tasks.filter { it.mode == 5 && it.visible && it.left >= 0 && it.top >= 0 && it.right <= width && it.bottom <= height && it.right-it.left >= 160 && it.bottom-it.top >= 120 }.take(12).reversed().forEach { task ->

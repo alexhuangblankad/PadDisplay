@@ -5,7 +5,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import org.json.JSONObject
 
 data class DesktopTask(val id: Int, val packageName: String, val mode: Int,
-    val left: Int, val top: Int, val right: Int, val bottom: Int, val visible: Boolean = true)
+    val left: Int, val top: Int, val right: Int, val bottom: Int, val visible: Boolean = true,
+    val configuration: String = "")
 data class DesktopSnapshot(
     val running: Boolean = false, val displayId: Int = -1,
     val apps: List<SystemDisplayService.LaunchableApp> = emptyList(),
@@ -24,7 +25,7 @@ object DesktopState {
         return (0 until rows.length()).map { index ->
             val t = rows.getJSONObject(index)
             DesktopTask(t.getInt("id"), t.getString("package"), t.getInt("mode"),
-                t.getInt("left"), t.getInt("top"), t.getInt("right"), t.getInt("bottom"), t.optBoolean("visible", true))
+                t.getInt("left"), t.getInt("top"), t.getInt("right"), t.getInt("bottom"), t.optBoolean("visible", true), t.optString("configuration"))
         }
     }
 }

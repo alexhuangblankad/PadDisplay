@@ -49,6 +49,8 @@ public final class DesktopSmoke {
         require(probe.parseInjectionSpace(dump, 9) == null, "missing display returned coordinates");
         String json = "{\"ok\":true,\"tasks\":[{\"id\":17,\"package\":\"com.demo\",\"mode\":5,\"left\":0,\"top\":0,\"right\":960,\"bottom\":800}]}";
         require(DesktopState.INSTANCE.parseTasks(json).get(0).getId() == 17, "task identity lost");
+        String configured = json.replace("\"mode\":5", "\"mode\":5,\"configuration\":\"display=5 / 1920x1080 dp / DPI 320\"");
+        require(DesktopState.INSTANCE.parseTasks(configured).get(0).getConfiguration().contains("display=5"), "external app configuration omitted");
         failed = false;
         try { DesktopState.INSTANCE.parseTasks("{\"ok\":false,\"error\":\"denied\"}"); } catch (IllegalStateException expected) { failed = true; }
         require(failed, "task read failure became an empty success");

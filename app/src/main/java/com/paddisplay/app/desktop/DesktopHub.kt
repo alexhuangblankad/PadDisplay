@@ -112,6 +112,7 @@ fun TaskPanel(state: DesktopSnapshot, modifier: Modifier = Modifier) {
                     Text(app?.label ?: task.packageName, fontWeight = FontWeight.Bold)
                     Text("任务 ${task.id} · ${if (task.mode == 5) "自由窗口模式" else "系统窗口模式 ${task.mode}"} · (${task.left}, ${task.top})–(${task.right}, ${task.bottom})",
                         style = MaterialTheme.typography.bodySmall)
+                    if (task.configuration.isNotEmpty()) Text(task.configuration, style = MaterialTheme.typography.bodySmall)
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         Button({ DesktopService.send(context, "focus", taskId = task.id) }, enabled = state.running) { Text("切换") }
                         OutlinedButton({ DesktopService.send(context, "close", taskId = task.id) }, enabled = state.running) { Text("关闭窗口") }

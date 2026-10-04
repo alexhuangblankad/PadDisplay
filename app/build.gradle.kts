@@ -12,8 +12,8 @@ android {
         applicationId = "com.paddisplay.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 26
-        versionName = "1.0.2"
+        versionCode = 27
+        versionName = "1.0.3"
 
         // Shizuku UserService 需要一个稳定的 AIDL 接口名
         buildConfigField("String", "AIDL_INTERFACE", "\"com.paddisplay.app.IPadDisplayService\"")

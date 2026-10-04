@@ -1,5 +1,12 @@
 # PadDisplay 交接文档
 
+> **2026-10-04 / v1.0.3 / versionCode 27**：用户观察应用仍呈 2520×1680，提出沿用内屏配置假设；没有任务配置读回，不能认定根因。
+> 启动前通过 startActivityAsUser + ActivityOptions 提交目标显示器、窗口模式与外屏 cur 计算的边界，接口失败回退原 am 路径，后续继续验证。
+> 窗口列表新增 displayId、screenWidthDp / screenHeightDp、DPI、appBounds；输出信号、逻辑工作区、应用配置分开判断。
+> 调整前端为柔和渐变背景、紧凑时钟、统一线条工具图标、轻量 Dock、悬停反馈；标题条定位不重复扣系统栏 inset。
+> 不修改 ROM 配置、不强制应用可调整；构建与 UI 检查不证明 ColorOS 已允许自由窗口。
+
+
 > **2026-10-04 / v1.0.2 / versionCode 26**：用户实测新版桌面正常，但所有应用没有可调整自由窗口，只有关闭有效。
 > 修复 mode=5 启动任务未设置边界的问题；窗口模式与请求边界同时读回验证。
 > WCT 拒绝或读回不符时，通过 startActivityFromRecents + ActivityOptions 再次请求目标任务的窗口模式和边界。
