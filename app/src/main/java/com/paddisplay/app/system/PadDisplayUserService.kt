@@ -85,7 +85,10 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     private fun restoreDesktopAfterDeath(): String = runCatching {
             val messages = mutableListOf<String>()
             var ok = true
-            if (desktopOriginalWindowMode != null && desktopDisplayId > 0) {
+            if (desktopDisplayId > 0) {
+                val retired = retireDesktopSurface(desktopDisplayId)
+                messages += retired
+                if (!retired.startsWith("RESULT_OK=true")) ok = false
                 val restored = restoreDesktopDisplay(desktopDisplayId)
                 messages += restored
                 if (!restored.startsWith("RESULT_OK=true")) ok = false
@@ -109,6 +112,14 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
 
     override fun desktopTasks(displayId: Int) = desktopTasksController.list(displayId)
+    private fun ownSurfaceChecked(displayId: Int, retire: Boolean): String = runCatching {
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: error("无 DisplayManager")
+        val d = dm.getDisplay(displayId) ?: error("外屏已断开")
+        check(displayId == desktopDisplayId && inputController.displayIdentity(d).first == desktopDisplayUniqueId) { "原外屏身份不匹配，未修改其它屏幕" }
+        desktopTasksController.ownSurface(displayId, retire)
+    }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
+    override fun ensureDesktopSurface(displayId: Int) = ownSurfaceChecked(displayId, false)
+    override fun retireDesktopSurface(displayId: Int) = ownSurfaceChecked(displayId, true)
     override fun launchDesktopApp(displayId: Int, component: String, freeform: Boolean) =
         desktopTasksController.launch(displayId, component, freeform)
     override fun desktopTaskAction(displayId: Int, taskId: Int, action: String) =
@@ -133,9 +144,9 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         require(displayId > 0 && Reflect.findMethod(d.javaClass, "getType")?.invoke(d) == 2)
         check(displayId == desktopDisplayId && inputController.displayIdentity(d).first == desktopDisplayUniqueId) { "原外屏身份不匹配，未修改其它屏幕" }
         val tasks = desktopTasksController.returnTasksToInternal(displayId)
-        val mode = mirrorController.setWindowingMode(displayId, desktopOriginalWindowMode ?: 0)
-        if (mode.ok) desktopOriginalWindowMode = null
-        "RESULT_OK=${tasks.startsWith("RESULT_OK=true") && mode.ok}\n$tasks\n${mode.toText()}\n已恢复系统显示策略，复制画面以显示器实际输出为准。"
+        val mode = desktopOriginalWindowMode?.let { mirrorController.setWindowingMode(displayId, it) }
+        if (mode?.ok != false) desktopOriginalWindowMode = null
+        "RESULT_OK=${tasks.startsWith("RESULT_OK=true") && mode?.ok != false}\n$tasks\n${mode?.toText() ?: "未写入显示器窗口策略"}\n显示器后续调度由系统处理。"
     }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
 
     @Synchronized

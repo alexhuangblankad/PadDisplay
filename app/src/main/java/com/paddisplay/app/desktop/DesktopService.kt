@@ -223,10 +223,6 @@ class DesktopService : Service() {
             runCatching { ShizukuManager.service?.execCommand("cmd appops set --user current com.paddisplay.app SYSTEM_ALERT_WINDOW allow") }
         }
         bindMouse()
-        if (store.freeform) {
-            val prepared = withContext(Dispatchers.IO) { ShizukuManager.service?.prepareDesktopDisplay(d.displayId) ?: "Shizuku 已断开" }
-            message(prepared)
-        }
         showDesktop(); refreshTasks()
     }
 
@@ -236,7 +232,6 @@ class DesktopService : Service() {
         target = d
         DesktopState.state.update { it.copy(displayId = d.displayId, running = true) }
         restoreSavedScale(d); bindMouse()
-        if (store.freeform) withContext(Dispatchers.IO) { ShizukuManager.service?.prepareDesktopDisplay(d.displayId) }
         showDesktop(); refreshTasks()
     }
 
@@ -270,10 +265,14 @@ class DesktopService : Service() {
         message(output)
     }
 
-    private fun showDesktop(launchpad: Boolean = false, tasks: Boolean = false, controls: Boolean = false) {
+    private suspend fun showDesktop(launchpad: Boolean = false, tasks: Boolean = false, controls: Boolean = false) {
+        if (stopping) return
         val d = requireTarget()
         val options = ActivityOptions.makeBasic().setLaunchDisplayId(d.displayId)
         startActivity(Intent(this, DesktopActivity::class.java).putExtra("launchpad", launchpad).putExtra("tasks", tasks).putExtra("controls", controls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), options.toBundle())
+        delay(180)
+        val result = withContext(Dispatchers.IO) { ShizukuManager.service?.ensureDesktopSurface(d.displayId) ?: "Shizuku 已断开" }
+        if (!result.startsWith("RESULT_OK=true")) message(result)
     }
 
     private suspend fun refreshTasks() {
@@ -281,9 +280,9 @@ class DesktopService : Service() {
         val d = requireTarget()
         runCatching {
             val output = withContext(Dispatchers.IO) { ShizukuManager.service?.desktopTasks(d.displayId) ?: error("Shizuku 已断开") }
-            DesktopState.parseTasks(output) to org.json.JSONObject(output).optInt("activeTaskId", -1)
+            Triple(DesktopState.parseTasks(output), org.json.JSONObject(output).optInt("activeTaskId", -1), org.json.JSONObject(output).optBoolean("desktopVisible"))
         }.fold(
-            { (tasks, active) -> DesktopState.state.update { it.copy(tasks = tasks, activeTaskId = active, taskError = null, favorites = store.favorites()) } },
+            { (tasks, active, desktopVisible) -> DesktopState.state.update { it.copy(tasks = tasks, activeTaskId = active, desktopVisible = desktopVisible, taskError = null, favorites = store.favorites()) } },
             { error -> DesktopState.state.update { it.copy(tasks = emptyList(), activeTaskId = -1, taskError = error.message) } },
         )
         val space = withContext(Dispatchers.IO) {
@@ -318,7 +317,7 @@ class DesktopService : Service() {
         val immersive = store.hideForGames && state.tasks.firstOrNull()?.packageName?.let {
             it.contains("limelight", true) || it.contains("moonlight", true)
         } == true
-        if (!Settings.canDrawOverlays(this) || immersive) {
+        if (!Settings.canDrawOverlays(this) || immersive || state.desktopVisible) {
             removeOverlay()
             DesktopState.state.update { it.copy(overlayReady = false) }
             return
@@ -362,13 +361,13 @@ class DesktopService : Service() {
                 }, LinearLayout.LayoutParams(dp(52), dp(52)))
             }
             if (!collapsed) {
-                state.apps.distinctBy { it.packageName }.filter { it.packageName in state.favorites }.take(6).forEach { app ->
+                DockApps.select(state.apps, state.favorites, 8).forEach { app ->
                     val task = state.tasks.firstOrNull { it.packageName == app.packageName }
                     icon(app.packageName, app.label, task != null) {
                         if (task == null) send(this, "launch", app.component) else send(this, "focus", taskId = task.id)
                     }
                 }
-                state.tasks.filter { it.packageName !in state.favorites }.take(12).forEach { task ->
+                state.tasks.filter { it.packageName !in DockApps.select(state.apps, state.favorites, 8).map { app -> app.packageName } }.take(12).forEach { task ->
                     val label = state.apps.firstOrNull { it.packageName == task.packageName }?.label ?: task.packageName.substringAfterLast('.')
                     icon(task.packageName, label, true) { send(this, "focus", taskId = task.id) }
                 }
@@ -445,7 +444,9 @@ class DesktopService : Service() {
         target?.let { d ->
             lines += runCatching {
                 requireTarget()
-                ShizukuManager.service?.restoreDesktopDisplay(d.displayId) ?: "Shizuku 已断开，系统复制策略恢复未确认"
+                val retired = ShizukuManager.service?.retireDesktopSurface(d.displayId) ?: "Shizuku 已断开，自有桌面清理未确认"
+                val restored = ShizukuManager.service?.restoreDesktopDisplay(d.displayId) ?: "Shizuku 已断开，系统复制策略恢复未确认"
+                "$retired\n$restored"
             }.getOrElse { "外屏任务回迁失败：${it.message}" }
         }
         lines += runCatching { ShizukuManager.service?.releaseDesktopSession(lifetime) ?: "Shizuku 已断开，鼠标解绑未确认" }

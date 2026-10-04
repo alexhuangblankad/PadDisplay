@@ -23,7 +23,7 @@ class EscapeNavigationActivity : ComponentActivity() {
         window.attributes = window.attributes.apply { y = (24 * resources.displayMetrics.density).toInt() }
         setContent { PadTheme(this) {
             val state by DesktopState.state.collectAsState()
-            LaunchedEffect(state.running) { if (!state.running) finish() }
+            LaunchedEffect(state.running) { if (!state.running) finishAndRemoveTask() }
             LaunchedEffect(Unit) { delay(15000); finish() }
             Surface(shape = RoundedCornerShape(24.dp), shadowElevation = 12.dp) {
                 Column(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {

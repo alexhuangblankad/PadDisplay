@@ -12,6 +12,7 @@ import org.json.JSONObject
 /** Native tasks on physical displays. No virtual displays or mouse event relay. */
 class DesktopTaskController(private val context: Context?, private val shell: (String) -> String) {
     private val windowBounds = mutableMapOf<Int, Rect>()
+    private val launchedTasks = mutableSetOf<Int>()
     private fun service(): Any {
         val clazz = Class.forName("android.app.ActivityTaskManager")
         return Reflect.findMethod(clazz, "getService")?.invoke(null) ?: error("无 ActivityTaskManager")
@@ -65,7 +66,8 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
                 .put("left", rect.left).put("top", rect.top).put("right", rect.right).put("bottom", rect.bottom))
         }
         val active = current.firstOrNull()?.takeIf { component(it)?.packageName != "com.paddisplay.app" }
-        JSONObject().put("ok", true).put("tasks", array).put("activeTaskId", active?.let { number(it, "taskId") } ?: -1).toString()
+        JSONObject().put("ok", true).put("tasks", array).put("activeTaskId", active?.let { number(it, "taskId") } ?: -1)
+            .put("desktopVisible", current.firstOrNull()?.let { component(it)?.className == "com.paddisplay.app.desktop.DesktopActivity" } == true).toString()
     }.getOrElse { JSONObject().put("ok", false).put("error", Reflect.describe(it)).toString() }
 
     private fun result(block: () -> String) = runCatching { "RESULT_OK=true\n${block()}" }
@@ -84,6 +86,7 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
             if (found != null) break
         }
         val t = found ?: error("启动未获外屏任务读回确认：$output")
+        launchedTasks += number(t, "taskId")
         val actualMode = mode(t)
         if (freeform && actualMode != 5) {
             val converted = action(id, number(t, "taskId"), "window")
@@ -159,7 +162,10 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
         val move = Reflect.findMethod(svc.javaClass, "moveRootTaskToDisplay", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
             ?: error("系统未提供任务回迁接口")
         val roots = (getRoots.invoke(svc, id) as? List<*>)?.filterNotNull() ?: error("外屏根任务不可读取")
-        roots.filter { component(it)?.packageName != "com.paddisplay.app" }.forEach { root ->
+        roots.filter { root ->
+            val children = Reflect.getField(root, "childTaskIds").getOrNull() as? IntArray ?: intArrayOf()
+            if (children.isEmpty()) number(root, "taskId") in launchedTasks else children.all { it in launchedTasks }
+        }.forEach { root ->
             // Home / recents roots are owned by the system, never move them.
             val config = Reflect.getField(root, "configuration").getOrThrow()
             val wc = Reflect.getField(config, "windowConfiguration").getOrThrow()
@@ -167,10 +173,39 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
             if (type == 1 && component(root) != null) move.invoke(svc, number(root, "taskId"), 0)
         }
         SystemClock.sleep(200)
-        check(rawTasks(id).none { component(it)?.packageName?.let { pkg -> pkg != "com.paddisplay.app" } == true }) {
-            "仍有应用停留在外屏；系统复制回退未确认"
+        check(rawTasks(id).none { number(it, "taskId") in launchedTasks }) {
+            "本次启动的应用仍停留在外屏；已保留系统状态，没有修改厂商调度"
         }
+        launchedTasks.clear()
         "外屏应用已回迁内屏；等待系统默认复制策略"
+    }
+
+    fun ownSurface(id: Int, retire: Boolean): String = result {
+        val own = rawTasks(id).filter { t -> component(t)?.let {
+            it.packageName == "com.paddisplay.app" && it.className in setOf(
+                "com.paddisplay.app.desktop.DesktopActivity", "com.paddisplay.app.desktop.EscapeNavigationActivity")
+        } == true }
+        val svc = service()
+        if (retire) {
+            val remove = Reflect.findMethod(svc.javaClass, "removeTask", Int::class.javaPrimitiveType) ?: error("无法移除自有桌面任务")
+            own.forEach { check(remove.invoke(svc, number(it,"taskId")) == true) }
+            "已移除自有外屏桌面任务"
+        } else {
+            val desktop = own.firstOrNull { component(it)?.className?.endsWith(".DesktopActivity") == true } ?: error("桌面任务尚未出现")
+            val token = Reflect.getField(desktop,"token").getOrThrow() ?: error("无桌面 token")
+            val tc = Class.forName("android.window.WindowContainerTransaction")
+            val wc = Class.forName("android.window.WindowContainerToken")
+            val tx = tc.getDeclaredConstructor().newInstance()
+            Reflect.findMethod(tc,"setWindowingMode",wc,Int::class.javaPrimitiveType)?.invoke(tx,token,1) ?: error("无法设置自有桌面全屏")
+            Reflect.findMethod(tc,"setBounds",wc,Rect::class.java)?.invoke(tx,token,Rect()) ?: error("无法清除自有桌面旧边界")
+            val organizer = Reflect.findMethod(svc.javaClass,"getWindowOrganizerController")?.invoke(svc) ?: error("无 WindowOrganizer")
+            val apply = Reflect.findMethod(organizer.javaClass,"applyTransaction",tc) ?: error("无窗口事务接口")
+            apply.invoke(organizer,tx)
+            var verified = false
+            repeat(10) { if (!verified) { SystemClock.sleep(100); verified = mode(task(id,number(desktop,"taskId"))) == 1 } }
+            check(verified) { "系统未确认自有桌面全屏；未修改显示器窗口策略" }
+            "自有桌面已全屏读回，不影响应用窗口模式"
+        }
     }
 
     fun resize(id: Int, taskId: Int, l: Int, t: Int, r: Int, b: Int): String = result {

@@ -748,7 +748,7 @@ class SystemDisplayService(
      *
      * 顺序：扩展屏 → 内屏保持点亮 → 音频留在平板侧 → 外屏开应用形成第二个桌面。
      */
-    suspend fun oneClickExtend(): OpResult = withContext(Dispatchers.IO) {
+    suspend fun oneClickExtend(configureWindowPolicy: Boolean = true): OpResult = withContext(Dispatchers.IO) {
         val (svc, err) = requireService()
         if (svc == null) return@withContext err!!
 
@@ -765,7 +765,7 @@ class SystemDisplayService(
         val lines = mutableListOf<String>()
 
         // 1) 扩展
-        val ext = applyExtendMode(external.displayId)
+        val ext = if (configureWindowPolicy) applyExtendMode(external.displayId) else OpResult(true, "保留厂商显示策略", emptyList())
         lines += (if (ext.ok) "✅ " else "❌ ") + ext.title
         ext.lines.take(4).forEach { lines += "    $it" }
 

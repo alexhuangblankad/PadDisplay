@@ -1,6 +1,9 @@
 import com.paddisplay.app.desktop.DesktopState;
 import com.paddisplay.app.desktop.WindowPlacement;
 import com.paddisplay.app.desktop.EscapeKeyPolicy;
+import com.paddisplay.app.desktop.DockApps;
+import com.paddisplay.app.system.SystemDisplayService.LaunchableApp;
+import java.util.*;
 import com.paddisplay.app.system.CoordinateSpaceProbe;
 import java.util.Random;
 
@@ -8,6 +11,16 @@ import java.util.Random;
 public final class DesktopSmoke {
     static void require(boolean value, String message) { if (!value) throw new AssertionError(message); }
     public static void main(String[] args) {
+        List<LaunchableApp> oppo = Arrays.asList(
+            new LaunchableApp("com.heytap.browser", "浏览器", "com.heytap.browser/.Main"),
+            new LaunchableApp("com.coloros.filemanager", "文件管理", "com.coloros.filemanager/.Main"),
+            new LaunchableApp("com.android.settings", "设置", "com.android.settings/.Settings"),
+            new LaunchableApp("com.coloros.gallery3d", "相册", "com.coloros.gallery3d/.Main"),
+            new LaunchableApp("com.tencent.mm", "微信", "com.tencent.mm/.Main"));
+        List<LaunchableApp> automatic = DockApps.INSTANCE.select(oppo, Collections.emptySet(), 8);
+        require(automatic.size()==5, "Google-free default Dock empty");
+        require(automatic.get(0).getPackageName().equals("com.heytap.browser"), "browser role not selected");
+        require(DockApps.INSTANCE.select(oppo, Collections.singleton("com.tencent.mm"), 1).get(0).getPackageName().equals("com.tencent.mm"), "user pin ignored");
         require(EscapeKeyPolicy.INSTANCE.matches(139, 0), "F9 unavailable");
         require(EscapeKeyPolicy.INSTANCE.matches(139, 8), "Fn-F9 meta flag rejected");
         require(!EscapeKeyPolicy.INSTANCE.matches(57, 0), "left Alt captured");

@@ -134,7 +134,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(busy = true)
             try {
-                val extended = systemService.oneClickExtend()
+                val extended = systemService.oneClickExtend(configureWindowPolicy = false)
                 check(extended.ok) { extended.toText() }
                 val external = systemService.primaryExternal() ?: error("外屏已断开")
                 val apps = systemService.listLaunchableApps()

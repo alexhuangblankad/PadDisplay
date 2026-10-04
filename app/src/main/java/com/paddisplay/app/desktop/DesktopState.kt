@@ -13,6 +13,7 @@ data class DesktopSnapshot(
     val overlayReady: Boolean = false, val favorites: Set<String> = emptySet(),
     val taskError: String? = null,
     val activeTaskId: Int = -1,
+    val desktopVisible: Boolean = false,
 )
 object DesktopState {
     val state = MutableStateFlow(DesktopSnapshot())

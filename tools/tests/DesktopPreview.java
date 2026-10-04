@@ -11,16 +11,19 @@ import java.util.HashSet;
 /** Visual fixture only: no physical display, task control or mouse binding is tested here. */
 public class DesktopPreview extends Instrumentation {
     private boolean escape;
+    private boolean noGoogle;
+    private String theme;
     private static void set(Object target, String name, Object value) throws Exception {
         Field field = target.getClass().getDeclaredField(name);
         field.setAccessible(true); field.set(target, value);
     }
-    @Override public void onCreate(Bundle args) { super.onCreate(args); escape = args != null && "true".equals(args.getString("escape")); start(); }
+    @Override public void onCreate(Bundle args) { super.onCreate(args); escape = args != null && "true".equals(args.getString("escape")); noGoogle = args != null && "true".equals(args.getString("no_google")); theme = args == null ? null : args.getString("theme"); start(); }
     @Override public void onStart() {
         try {
             runOnMainSync(() -> {
                 try {
                     ClassLoader loader = getTargetContext().getClassLoader();
+                    if (theme != null) getTargetContext().getSharedPreferences("appearance", 0).edit().putString("mode", theme).commit();
                     Object snapshot = loader.loadClass("com.paddisplay.app.desktop.DesktopSnapshot").getConstructor().newInstance();
                     set(snapshot, "running", true); set(snapshot, "displayId", 0);
                     Class<?> appClass = loader.loadClass("com.paddisplay.app.system.SystemDisplayService$LaunchableApp");
@@ -28,8 +31,8 @@ public class DesktopPreview extends Instrumentation {
                     for (ResolveInfo row : getTargetContext().getPackageManager().queryIntentActivities(new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER), 0)) {
                         String pkg = row.activityInfo.packageName;
                         if (pkg.equals("com.paddisplay.app")) continue;
+                        if (noGoogle && (pkg.startsWith("com.google.") || pkg.equals("com.android.chrome"))) continue;
                         apps.add(appClass.getConstructor(String.class,String.class,String.class).newInstance(pkg,row.loadLabel(getTargetContext().getPackageManager()).toString(),pkg+"/"+row.activityInfo.name));
-                        if (pkg.equals("com.android.chrome") || pkg.equals("com.google.android.apps.docs") || pkg.equals("com.google.android.apps.photos")) favorites.add(pkg);
                     }
                     set(snapshot, "apps", apps); set(snapshot, "favorites", favorites);
                     Class<?> stateClass = loader.loadClass("com.paddisplay.app.desktop.DesktopState");
