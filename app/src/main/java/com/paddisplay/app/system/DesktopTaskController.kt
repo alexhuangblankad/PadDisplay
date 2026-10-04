@@ -83,15 +83,45 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
     private fun result(block: () -> String) = runCatching { "RESULT_OK=true\n${block()}" }
         .getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
 
+    private fun capabilitySummary(): String {
+        val values = listOf("enable_freeform_support", "force_desktop_mode_on_external_displays").associateWith {
+            runCatching { shell("/system/bin/settings get global $it").trim() }.getOrDefault("读取失败")
+        }
+        val feature = runCatching { context?.packageManager?.hasSystemFeature("android.software.freeform_window_management") }.getOrNull()
+        val disabled = feature == false && values["enable_freeform_support"] in setOf("0", "null")
+        return "真实设置：${values.entries.joinToString { "${it.key}=${it.value}" }}，feature=$feature。" +
+            if (disabled) "未满足 AOSP 自由窗口能力前置条件；ColorOS 内屏小窗不证明物理外屏允许 mode=5。可在系统开发者选项手动启用自由窗口并按系统提示重启；本应用未自动写设置。" else "设置值不证明 ROM 已采用；以实际任务模式和边界读回为准。"
+    }
+
     fun launch(id: Int, component: String, freeform: Boolean): String = result {
         display(id)
         val comp = ComponentName.unflattenFromString(component) ?: error("无效应用组件")
         require(Regex("[A-Za-z0-9_.]+/[A-Za-z0-9_.$]+").matches(comp.flattenToString()))
         val space = CoordinateSpaceProbe(shell).injectionSpace(id) ?: error("外屏逻辑工作区不可读取")
         check(space.raw.startsWith("cur=")) { "缺少当前外屏逻辑尺寸，未使用内屏尺寸猜测" }
+        val existing = rawTasks(id).firstOrNull { component(it)?.packageName == comp.packageName }
+        if (existing != null && freeform && mode(existing) == 5) {
+            val rect = bounds(existing)
+            if (rect.width() >= 160 && rect.height() >= 120 && rect.width() < space.width && rect.height() < space.height) {
+                val focused = action(id, number(existing, "taskId"), "focus")
+                check(focused.startsWith("RESULT_OK=true")) { focused }
+                return@result "已切换现有外屏自由窗口，未重复创建：$focused"
+            }
+        }
+        var launchFlags = Intent.FLAG_ACTIVITY_NEW_TASK
+        if (freeform) {
+            // A reused internal fullscreen task may retain its original root/configuration.
+            // Taskbar uses MULTIPLE_TASK, with LAUNCH_ADJACENT for single-task activities.
+            launchFlags = launchFlags or Intent.FLAG_ACTIVITY_MULTIPLE_TASK
+            val launchMode = runCatching { context?.packageManager?.getActivityInfo(comp, 0)?.launchMode }.getOrNull()
+            if (launchMode == android.content.pm.ActivityInfo.LAUNCH_SINGLE_TASK || launchMode == android.content.pm.ActivityInfo.LAUNCH_SINGLE_INSTANCE) {
+                launchFlags = launchFlags or Intent.FLAG_ACTIVITY_LAUNCH_ADJACENT
+            }
+        }
         // Supply target-display options at launch time, before the framework resolves
         // the task/root and activity configuration. Shell am start has no bounds option.
         val direct = runCatching {
+            if (!freeform) return@runCatching shell("/system/bin/am start --display $id -n ${comp.flattenToString()}")
             val options = ActivityOptions.makeBasic().setLaunchDisplayId(id)
             Reflect.findMethod(options.javaClass, "setLaunchWindowingMode", Int::class.javaPrimitiveType)
                 ?.invoke(options, if (freeform) 5 else 1) ?: error("无窗口启动选项")
@@ -104,13 +134,13 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
                 Int::class.javaPrimitiveType, Int::class.javaPrimitiveType, Class.forName("android.app.ProfilerInfo"),
                 Bundle::class.java, Int::class.javaPrimitiveType) ?: error("无目标配置启动接口")
             val status = method.invoke(service(), null, "com.android.shell", null,
-                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(comp).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setComponent(comp).addFlags(launchFlags),
                 null, null, null, 0, 0, null, options.toBundle(), user) as Int
             check(status >= 0) { "系统启动拒绝：$status" }
             "ActivityOptions 启动结果=$status"
         }
         val output = direct.getOrElse {
-            shell("/system/bin/am start --display $id ${if (freeform) "--windowingMode 5" else "--windowingMode 1"} -n ${comp.flattenToString()}")
+            shell("/system/bin/am start --display $id ${if (freeform) "--windowingMode 5" else "--windowingMode 1"} -f $launchFlags -n ${comp.flattenToString()}")
         }
         check(output.isNotBlank() && !Regex("Error|Exception|\\[exit=", RegexOption.IGNORE_CASE).containsMatchIn(output)) { output }
         var found: Any? = null
@@ -203,7 +233,7 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
                 check(verified) {
                     "自由窗口/全屏未确认：task=$taskId，mode=${mode(actual)}，bounds=${bounds(actual)}，请求=$desired；$retry；" +
                         "事务=${transactionError?.let { Reflect.describe(it) } ?: "已提交"}；" +
-                        "系统 freeform feature=${context?.packageManager?.hasSystemFeature("android.software.freeform_window_management")}；未修改厂商配置"
+                        capabilitySummary()
                 }
                 if (targetMode == 5) "自由窗口模式及边界已读回：task=$taskId，bounds=${bounds(actual)}" else "全屏模式已读回"
             }

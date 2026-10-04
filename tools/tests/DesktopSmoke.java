@@ -26,6 +26,11 @@ public final class DesktopSmoke {
         require(!EscapeKeyPolicy.INSTANCE.matches(57, 0), "left Alt captured");
         require(!EscapeKeyPolicy.INSTANCE.matches(139, 2), "Alt-F9 captured");
         require(!EscapeKeyPolicy.INSTANCE.matches(139, 0x1000), "Ctrl-F9 captured");
+        require(EscapeKeyPolicy.INSTANCE.altShiftMatches(59, 3), "Alt then Shift chord unavailable");
+        require(EscapeKeyPolicy.INSTANCE.altShiftMatches(57, 3), "Shift then Alt chord unavailable");
+        require(!EscapeKeyPolicy.INSTANCE.altShiftMatches(57, 2), "standalone Alt triggers rescue");
+        require(!EscapeKeyPolicy.INSTANCE.altShiftMatches(59, 1), "standalone Shift triggers rescue");
+        require(!EscapeKeyPolicy.INSTANCE.altShiftMatches(59, 0x1003), "Ctrl-Alt-Shift triggers rescue");
         String[] placements = {"left", "right", "center", "fill", "up", "down", "moveLeft", "moveRight", "larger", "smaller"};
         Random random = new Random(19);
         for (int i = 0; i < 500; i++) {

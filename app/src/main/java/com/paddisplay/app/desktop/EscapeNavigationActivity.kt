@@ -20,7 +20,8 @@ class EscapeNavigationActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         window.setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-        window.attributes = window.attributes.apply { y = (24 * resources.displayMetrics.density).toInt() }
+        // Keep the focus-release navigation above the temporarily revealed Dock.
+        window.attributes = window.attributes.apply { y = (104 * resources.displayMetrics.density).toInt() }
         setContent { PadTheme(this) {
             val state by DesktopState.state.collectAsState()
             LaunchedEffect(state.running) { if (!state.running) finishAndRemoveTask() }

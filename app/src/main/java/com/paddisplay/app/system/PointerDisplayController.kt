@@ -62,10 +62,10 @@ class PointerDisplayController(
         private const val DEFAULT_DISPLAY = 0
 
         /** `Settings.Global.DEVELOPMENT_FORCE_DESKTOP_MODE_ON_EXTERNAL_DISPLAYS` */
-        const val KEY_FORCE_DESKTOP_MODE = "development_force_desktop_mode_on_external_displays"
+        const val KEY_FORCE_DESKTOP_MODE = "force_desktop_mode_on_external_displays"
 
         /** `Settings.Global.DEVELOPMENT_ENABLE_FREEFORM_WINDOWS_SUPPORT` */
-        const val KEY_FREEFORM = "development_enable_freeform_windows_support"
+        const val KEY_FREEFORM = "enable_freeform_support"
 
         /** `WindowConfiguration.WINDOWING_MODE_FREEFORM` */
         const val WINDOWING_MODE_FREEFORM = 5

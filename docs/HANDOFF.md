@@ -1,5 +1,14 @@
 # PadDisplay 交接文档
 
+> **2026-10-04 / v1.0.4 / versionCode 28**：对照 Taskbar 与 Android 16 Settings.java，确认旧代码误将常量名作数据库键。
+> 真实键为 enable_freeform_support / force_desktop_mode_on_external_displays 等，修正探测与手动设置按钮；不在主机启动时自动写入。
+> 历史 development_ 前缀键的读写结果不能证明真实设置状态、写入权限或 ROM 删除功能，旧推断作废。
+> 参考 Taskbar 的新任务标志避免复用旧内屏全屏任务；已有合理自由窗口则聚焦。失败时读真实能力设置。
+> 用户补充工作台全屏 4K 成功，前端失败；前端全屏已对齐工作台原启动命令，窗口失败时回退并保留失败报告。
+> 全屏默认隐藏所有自有控件，Alt+Shift / F9 临时显示 15 秒；单独 Alt 不触发，修饰键 down/up 原样放行。串流焦点恢复需真机验证。
+> 研究依据与兼容性边界见 [自由窗口研究](freeform-research.md)。仍无 OPPO 真机验证。
+
+
 > **2026-10-04 / v1.0.3 / versionCode 27**：用户观察应用仍呈 2520×1680，提出沿用内屏配置假设；没有任务配置读回，不能认定根因。
 > 启动前通过 startActivityAsUser + ActivityOptions 提交目标显示器、窗口模式与外屏 cur 计算的边界，接口失败回退原 am 路径，后续继续验证。
 > 窗口列表新增 displayId、screenWidthDp / screenHeightDp、DPI、appBounds；输出信号、逻辑工作区、应用配置分开判断。

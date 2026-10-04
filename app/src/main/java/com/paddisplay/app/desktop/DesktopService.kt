@@ -61,6 +61,7 @@ class DesktopService : Service() {
     private var overlayContext: Context? = null
     private var collapsed = false
     private var panelSignature = ""
+    private var revealUntil = 0L
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) { scope.launch { delay(900); mutex.withLock {
@@ -149,8 +150,15 @@ class DesktopService : Service() {
                     "controls" -> showDesktop(controls = true)
                     "escape" -> {
                         val d = requireTarget()
+                        revealUntil = android.os.SystemClock.uptimeMillis() + 15000
+                        val expiration = revealUntil
                         startActivity(Intent(this@DesktopService, EscapeNavigationActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
                             ActivityOptions.makeBasic().setLaunchDisplayId(d.displayId).toBundle())
+                        refreshTasks()
+                        scope.launch {
+                            delay(15000)
+                            mutex.withLock { if (revealUntil == expiration) { revealUntil = 0L; panelSignature = ""; renderTaskbar() } }
+                        }
                     }
                     "launchpad" -> showDesktop(true)
                     "retry" -> bindMouse()
@@ -163,8 +171,17 @@ class DesktopService : Service() {
                         val d = requireTarget()
                         val component = intent?.getStringExtra("component") ?: error("未选择应用")
                         val output = withContext(Dispatchers.IO) {
-                            ShizukuManager.service?.launchDesktopApp(d.displayId, component, store.freeform)
-                                ?: error("Shizuku 已断开")
+                            val svc = ShizukuManager.service ?: error("Shizuku 已断开")
+                            val windowResult = svc.launchDesktopApp(d.displayId, component, store.freeform)
+                            if (store.freeform && windowResult.startsWith("RESULT_OK=false")) {
+                                val pkg = android.content.ComponentName.unflattenFromString(component)?.packageName ?: error("应用组件无效")
+                                runCatching {
+                                    DesktopState.parseTasks(svc.desktopTasks(d.displayId)).firstOrNull { it.packageName == pkg }
+                                        ?.let { svc.desktopTaskAction(d.displayId,it.id,"fullscreen") }
+                                }
+                                val fallback = svc.launchAppOnDisplay(d.displayId,component,pkg)
+                                "$windowResult\n自由窗口失败，已请求与工作台相同的全屏启动路径（不计作自由窗口成功）：\n$fallback"
+                            } else windowResult
                         }
                         message(output); refreshTasks()
                     }
@@ -314,17 +331,20 @@ class DesktopService : Service() {
     private fun renderTaskbar() {
         val d = target ?: return
         val state = DesktopState.state.value
+        val revealed = android.os.SystemClock.uptimeMillis() < revealUntil
+        val foregroundTask = state.tasks.firstOrNull { it.id == state.activeTaskId } ?: state.tasks.firstOrNull()
+        val fullscreen = foregroundTask != null && foregroundTask.mode == 1
         val immersive = store.hideForGames && state.tasks.firstOrNull()?.packageName?.let {
             it.contains("limelight", true) || it.contains("moonlight", true)
         } == true
-        if (!Settings.canDrawOverlays(this) || immersive || state.desktopVisible) {
+        if (!Settings.canDrawOverlays(this) || ((immersive || fullscreen) && !revealed) || state.desktopVisible) {
             removeOverlay()
             DesktopState.state.update { it.copy(overlayReady = false) }
             return
         }
         if (decorations?.dragging == true) return
         val dark = com.paddisplay.app.ui.ThemeSettings.dark(this)
-        val signature = "${d.displayId}|${state.tasks}|${state.activeTaskId}|${state.favorites}|$collapsed|$dark|$viewportWidth|$viewportHeight"
+        val signature = "${d.displayId}|${state.tasks}|${state.activeTaskId}|${state.favorites}|$collapsed|$dark|$viewportWidth|$viewportHeight|$revealed"
         if (overlay != null && signature == panelSignature) return
         removeOverlay()
         try {
@@ -405,13 +425,13 @@ class DesktopService : Service() {
                         Intent(this, DesktopService::class.java).putExtra("action", "bounds").putExtra("task", task).putExtra("bounds", bounds)) })
                     .also { it.show(state, viewportWidth, viewportHeight, dark) }
             }
-            state.tasks.firstOrNull { it.id == state.activeTaskId && it.mode != 5 }?.let { task ->
+            foregroundTask?.takeIf { it.mode != 5 }?.let { task ->
                 val controls = LinearLayout(ctx).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; this.background = rounded(); setPadding(dp(8), dp(6), dp(8), dp(6)) }
                 fun control(label: String, description: String, tint: Int = foreground, action: () -> Unit) {
                     controls.addView(TextView(ctx).apply { text = label; contentDescription = description; textSize = 16f; setTextColor(tint); setPadding(dp(12), dp(8), dp(12), dp(8)); isClickable = true; setOnClickListener { action() } })
                 }
                 control("●", "关闭窗口", Color.rgb(225, 86, 83)) { send(this, "close", taskId = task.id) }
-                control("●", "返回桌面", Color.rgb(208, 148, 34)) { send(this, "home") }
+                control("●", "收起应用并返回桌面", Color.rgb(208, 148, 34)) { send(this, "home") }
                 control("●", if (task.mode == 5) "全屏" else "恢复自由窗口", Color.rgb(47, 165, 101)) { send(this, if (task.mode == 5) "fullscreen" else "window", taskId = task.id) }
                 val label = state.apps.firstOrNull { it.packageName == task.packageName }?.label ?: task.packageName.substringAfterLast('.')
                 controls.addView(TextView(ctx).apply { text = label.take(20); setTextColor(foreground); setPadding(dp(10),0,dp(10),0) })
@@ -468,7 +488,7 @@ class DesktopService : Service() {
     }
 
     private suspend fun finishSession() {
-        stopping = true; removeOverlay()
+        stopping = true; revealUntil = 0L; removeOverlay()
         DesktopState.state.update { it.copy(running = false) }
         delay(250) // Let the external desktop finish before releasing its native display content.
         val result = cleanup()

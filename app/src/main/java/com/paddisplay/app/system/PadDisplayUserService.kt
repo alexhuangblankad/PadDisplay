@@ -640,7 +640,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
         val ctx = injectedContext
 
         // ---- 1) 全局设置：是否强制桌面模式 ----
-        val forceDesktopKey = "development_force_desktop_mode_on_external_displays"
+        val forceDesktopKey = "force_desktop_mode_on_external_displays"
         val globalValue = runCatching {
             android.provider.Settings.Global.getInt(ctx?.contentResolver, forceDesktopKey, -1)
         }.getOrDefault(-999)
@@ -920,11 +920,11 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
      * （需要 WRITE_SECURE_SETTINGS，shell 持有）。
      */
     private val desktopModeKeys = listOf(
-        "development_force_desktop_mode_on_external_displays",
-        "development_enable_freeform_windows_support",
-        "development_force_resizable_activities",
-        "development_enable_non_resizable_multi_window",
-        "development_override_desktop_experience_features",
+        "force_desktop_mode_on_external_displays",
+        "enable_freeform_support",
+        "force_resizable_activities",
+        "enable_non_resizable_multi_window",
+        "override_desktop_experience_features",
     )
 
     override fun probeDesktopMode(): String = clean(buildString {
@@ -957,8 +957,8 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
                 .any { line.contains(it, ignoreCase = true) }
         }
         if (hits.isEmpty()) {
-            appendLine("  ❌ 一个都没搜到 —— 说明这些键在 ColorOS 的 SettingsProvider 里**根本未注册**")
-            appendLine("     （不是权限问题，是 ROM 移除了这些开发者选项）")
+            appendLine("  未找到已保存的相关键；不能据此判断 ROM 移除了开发者选项。")
+            appendLine("  设置可能沿用默认值；还应检查系统实际窗口能力。")
         } else {
             appendLine("  搜到 ${hits.size} 条：")
             hits.forEach { appendLine("    $it") }
@@ -970,7 +970,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
             execRaw("/system/bin/settings --help").lines().take(3).joinToString(" / ").take(200))
         appendLine()
 
-        appendLine("--- 系统能力（编译期，不可改）---")
+        appendLine("--- 系统声明的 feature（不是当前运行时自由窗口状态）---")
         val pm = ctx?.packageManager
         listOf(
             "android.software.freeform_window_management",
@@ -1372,7 +1372,7 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
      * 「4K 显示器有黑边、分辨率设不上」最可能的总开关。
      */
     override fun setForceDesktopMode(enable: Boolean): String {
-        val key = "development_force_desktop_mode_on_external_displays"
+        val key = "force_desktop_mode_on_external_displays"
         val resolver = injectedContext?.contentResolver
         if (resolver == null) {
             return clean("RESULT_OK=false\n拿不到 ContentResolver，无法写入该设置")
