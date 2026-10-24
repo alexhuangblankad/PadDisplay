@@ -328,4 +328,7 @@ interface IPadDisplayService {
     String internalBrightness(float value);
     String ensureDesktopSurface(int displayId);
     String retireDesktopSurface(int displayId);
+    String desktopContentState(int displayId);
+    String prepareDesktopContentMode(int displayId, int userId, String originalValue);
+    String restoreDesktopContentMode(int userId, String originalValue);
 }

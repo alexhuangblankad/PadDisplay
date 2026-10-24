@@ -70,7 +70,7 @@ class DesktopService : Service() {
 
     private val displayListener = object : DisplayManager.DisplayListener {
         override fun onDisplayAdded(displayId: Int) { scope.launch { delay(900); mutex.withLock {
-            runCatching { reconnect() }.onFailure { message("外屏重连未完成：${it.message}") }
+            runCatching { reconnect() }.onFailure { finishSession(); message("外屏重连未完成：${it.message}\n${DesktopState.state.value.message}") }
         } } }
         override fun onDisplayRemoved(displayId: Int) {
             if (target?.displayId == displayId) scope.launch { mutex.withLock {
@@ -243,6 +243,7 @@ class DesktopService : Service() {
 
     private suspend fun startSession() {
         stopping = false
+        restoreMirrorPreference()
         system.enumerateDisplays()
         val d = system.primaryExternal()?.takeIf { it.typeCode == 2 && it.displayId > 0 } ?: error("未连接物理外屏")
         target = d; preferredIdentity = store.displayKey(d)
@@ -255,6 +256,7 @@ class DesktopService : Service() {
             runCatching { ShizukuManager.service?.execCommand("cmd appops set --user current com.paddisplay.app SYSTEM_ALERT_WINDOW allow") }
         }
         bindMouse()
+        prepareContentMode(d)
         showDesktop(); refreshTasks()
         DesktopState.state.update { it.copy(starting = false) }
     }
@@ -262,9 +264,10 @@ class DesktopService : Service() {
     private suspend fun reconnect() {
         if (stopping || target != null || !store.autoReconnect || preferredIdentity == null) return
         val d = system.enumerateDisplays().firstOrNull { it.typeCode == 2 && store.displayKey(it) == preferredIdentity } ?: return
+        restoreMirrorPreference()
         target = d
         DesktopState.state.update { it.copy(displayId = d.displayId, running = true) }
-        restoreSavedScale(d); bindMouse()
+        restoreSavedScale(d); bindMouse(); prepareContentMode(d)
         showDesktop(); refreshTasks()
     }
 
@@ -297,6 +300,32 @@ class DesktopService : Service() {
         }
         lastInputReport = output
         message(output)
+    }
+
+    private suspend fun restoreMirrorPreference() {
+        val journal = getSharedPreferences("desktop_mirror_original", MODE_PRIVATE)
+        if (!journal.contains("user")) return
+        val user = journal.getInt("user", -1)
+        val original = journal.getString("original", "") ?: ""
+        val result = withContext(Dispatchers.IO) { ShizukuManager.service?.restoreDesktopContentMode(user, original) ?: error("Shizuku 已断开；镜像恢复记录已保留") }
+        check(result.startsWith("RESULT_OK=true")) { result }
+        check(journal.edit().clear().commit())
+    }
+
+    private suspend fun prepareContentMode(d: DisplaySnapshot) {
+        if (android.os.Build.VERSION.SDK_INT < 37) return
+        requireTarget()
+        val raw = withContext(Dispatchers.IO) { ShizukuManager.service?.desktopContentState(d.displayId) ?: error("Shizuku 已断开") }
+        lastInputReport += "\n显示内容能力：$raw"
+        val state = org.json.JSONObject(raw)
+        check(state.optBoolean("ok")) { "显示内容能力读取失败：$raw" }
+        if (state.isNull("canHostTasks") || state.optBoolean("canHostTasks")) return
+        check(state.optString("mirror") == "1") { "外屏禁止承载应用任务，镜像偏好不是 1；未猜改系统开关：$raw" }
+        val user = state.getInt("userId")
+        check(getSharedPreferences("desktop_mirror_original", MODE_PRIVATE).edit().putInt("user", user).putString("original", "1").commit())
+        val result = withContext(Dispatchers.IO) { ShizukuManager.service?.prepareDesktopContentMode(d.displayId, user, "1") ?: error("Shizuku 已断开") }
+        lastInputReport += "\n$result"
+        check(result.startsWith("RESULT_OK=true")) { "$raw\n$result" }
     }
 
     private suspend fun showDesktop(launchpad: Boolean = false, tasks: Boolean = false, controls: Boolean = false) {
@@ -570,6 +599,7 @@ class DesktopService : Service() {
         lines += runCatching { ShizukuManager.service?.releaseDesktopSession(lifetime) ?: "Shizuku 已断开，鼠标解绑未确认" }
             .getOrElse { "鼠标恢复失败：${it.message}" }
         registered = false
+        runCatching { restoreMirrorPreference() }.onFailure { lines += "镜像偏好恢复失败：${it.message}" }
         val d = target
         if (d != null) runCatching {
             requireTarget()

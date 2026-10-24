@@ -12,7 +12,7 @@
 
 ## ColorOS 17 兼容预览
 
-[v1.1.0-rc1 预览 APK](https://github.com/alexhuangblankad/PadDisplay/releases/tag/v1.1.0-rc1)：双启动通道、实际外屏桌面读回、失败清理与兼容报告。用户反馈 VoyageOS4 也未能在升级后使用；本版本没有 OPPO 真机通过证明，旧版 v1.0.6 保留为历史稳定版。[参考分析与边界](docs/voyage4-coloros17.md)。
+[v1.1.0-rc2 预览 APK](https://github.com/alexhuangblankad/PadDisplay/releases/tag/v1.1.0-rc2)：在双启动通道基础上增加 Android 17 外屏承载任务能力探测、标准镜像偏好切换与恢复，修正独立显示成功误报。[镜像限制与验证边界](docs/android17-mirror-gate.md)。用户反馈 VoyageOS4 也未能在升级后使用；本版本没有 OPPO 真机通过证明，旧版 v1.0.6 保留为历史稳定版。[参考分析与边界](docs/voyage4-coloros17.md)。
 
 ## 全屏导航
 
