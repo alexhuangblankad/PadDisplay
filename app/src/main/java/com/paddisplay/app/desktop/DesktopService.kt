@@ -50,6 +50,7 @@ class DesktopService : Service() {
     private var target: DisplaySnapshot? = null
     private var preferredIdentity: String? = null
     private var registered = false
+    private var lastInputReport = "尚未进行输入关联"
     private var stopping = false
     private var overlay: View? = null
     private var windowControls: View? = null
@@ -121,7 +122,7 @@ class DesktopService : Service() {
         scope.launch {
             while (isActive) {
                 delay(3000)
-                mutex.withLock { if (target != null && !stopping) runCatching { refreshTasks() }
+                mutex.withLock { if (target != null && !stopping && !DesktopState.state.value.starting) runCatching { refreshTasks() }
                     .onFailure { message("外屏任务刷新失败：${it.message}") } }
             }
         }
@@ -221,7 +222,11 @@ class DesktopService : Service() {
             } catch (t: Throwable) {
                 if (t is CancellationException) throw t
                 message("操作未完成：${t.message}")
-                if (action == "start" && target == null) finishSession()
+                if (action == "start") {
+                    val failure = "主机启动失败：${t.message}"
+                    runCatching { finishSession() }.onFailure { message("$failure\n回滚失败：${it.message}") }
+                    DesktopState.state.update { it.copy(running = false, starting = false, message = failure + "\n" + it.message) }
+                }
             }
         } }
         return START_NOT_STICKY
@@ -237,10 +242,11 @@ class DesktopService : Service() {
     }
 
     private suspend fun startSession() {
+        stopping = false
         system.enumerateDisplays()
         val d = system.primaryExternal()?.takeIf { it.typeCode == 2 && it.displayId > 0 } ?: error("未连接物理外屏")
         target = d; preferredIdentity = store.displayKey(d)
-        DesktopState.state.update { it.copy(running = true, displayId = d.displayId, favorites = store.favorites()) }
+        DesktopState.state.update { it.copy(running = true, starting = true, displayId = d.displayId, favorites = store.favorites(), message = "正在启动主机…") }
         val apps = system.listLaunchableApps()
         DesktopState.state.update { it.copy(apps = apps) }
         restoreSavedScale(d)
@@ -250,6 +256,7 @@ class DesktopService : Service() {
         }
         bindMouse()
         showDesktop(); refreshTasks()
+        DesktopState.state.update { it.copy(starting = false) }
     }
 
     private suspend fun reconnect() {
@@ -288,17 +295,48 @@ class DesktopService : Service() {
             }
             svc.bindInputToDisplay(d.displayId)
         }
+        lastInputReport = output
         message(output)
     }
 
     private suspend fun showDesktop(launchpad: Boolean = false, tasks: Boolean = false, controls: Boolean = false) {
         if (stopping) return
         val d = requireTarget()
-        val options = ActivityOptions.makeBasic().setLaunchDisplayId(d.displayId)
-        startActivity(Intent(this, DesktopActivity::class.java).putExtra("launchpad", launchpad).putExtra("tasks", tasks).putExtra("controls", controls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), options.toBundle())
-        delay(180)
-        val result = withContext(Dispatchers.IO) { ShizukuManager.service?.ensureDesktopSurface(d.displayId) ?: "Shizuku 已断开" }
-        if (!result.startsWith("RESULT_OK=true")) message(result)
+        val evidence = mutableListOf("${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL} / Android ${android.os.Build.VERSION.RELEASE} API ${android.os.Build.VERSION.SDK_INT}",
+            "build=${android.os.Build.DISPLAY}; physicalDisplay=${d.displayId}",
+            "输入关联（与桌面启动分开验收）：$lastInputReport")
+        val intent = Intent(this, DesktopActivity::class.java).putExtra("launchpad", launchpad).putExtra("tasks", tasks)
+            .putExtra("controls", controls).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        suspend fun verify(): Boolean {
+            repeat(12) {
+                requireTarget() // Never continue against a recycled display ID.
+                delay(250)
+                val raw = withContext(Dispatchers.IO) { ShizukuManager.service?.desktopTasks(d.displayId) ?: error("Shizuku 已断开") }
+                val snapshot = runCatching { org.json.JSONObject(raw) }.getOrNull()
+                if (it == 1 && snapshot?.optInt("desktopTaskId", -1)?.let { id -> id >= 0 } == true && snapshot.optInt("desktopMode", -1) != 1) {
+                    evidence += withContext(Dispatchers.IO) { ShizukuManager.service?.ensureDesktopSurface(d.displayId) ?: "Shizuku 已断开" }
+                }
+                if (DesktopLaunchEvidence.confirmed(raw, d.displayId)) { evidence += "外屏桌面任务、全屏模式与非空边界已读回"; return true }
+                if (it == 11) evidence += "最后任务读回：$raw"
+            }
+            return false
+        }
+        // Shell launch does not depend on an app foreground service being allowed to start an Activity.
+        val shellResult = runCatching { withContext(Dispatchers.IO) {
+            ShizukuManager.service?.execCommand("/system/bin/am start --user current --display ${d.displayId} -f 0x10000000 -n com.paddisplay.app/.desktop.DesktopActivity --ez launchpad $launchpad --ez tasks $tasks --ez controls $controls")
+                ?: error("Shizuku 已断开")
+        } }.getOrElse { "shell 启动异常：${it.message}" }
+        evidence += "shell 通道：$shellResult"
+        var confirmed = verify()
+        if (!confirmed) {
+            evidence += runCatching {
+                startActivity(intent, ActivityOptions.makeBasic().setLaunchDisplayId(d.displayId).toBundle())
+                "应用通道已请求（不计作成功）"
+            }.getOrElse { "应用通道拒绝：${it.message}" }
+            confirmed = verify()
+        }
+        check(confirmed) { evidence.joinToString("\n") + "\n系统未确认外屏桌面，已停止启动；未修改厂商策略。" }
+        message(evidence.joinToString("\n"))
     }
 
     private suspend fun refreshTasks() {

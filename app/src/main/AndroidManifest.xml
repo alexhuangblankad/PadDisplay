@@ -41,7 +41,8 @@
         </activity>
 
         <!-- Shizuku：本应用自己的 UserService（运行在 shell 权限进程内） -->
-        <activity android:name=".desktop.DesktopActivity" android:exported="false"
+        <!-- Shell may launch our desktop; ordinary third-party apps lack DUMP. -->
+        <activity android:name=".desktop.DesktopActivity" android:exported="true" android:permission="android.permission.DUMP"
             android:taskAffinity="com.paddisplay.app.externaldesktop"
             android:launchMode="singleTask" android:resizeableActivity="true"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|density|smallestScreenSize|uiMode"

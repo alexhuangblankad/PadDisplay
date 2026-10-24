@@ -24,7 +24,7 @@ fun DesktopHub(vm: MainViewModel, ui: MainViewModel.UiState, onControls: () -> U
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("PadDisplay", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-                Text(if (state.running) "主机已开启 · 外屏工作空间" else "平板与外屏，随时切换",
+                Text(if (state.starting) "正在确认外屏桌面…" else if (state.running) "主机已开启 · 外屏工作空间" else "平板与外屏，随时切换",
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
             TextButton(onControls) { Text("高级设置") }
@@ -43,7 +43,7 @@ fun DesktopHub(vm: MainViewModel, ui: MainViewModel.UiState, onControls: () -> U
                     color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodySmall)
             }
         }
-        OutlinedButton({ DesktopService.send(context, "escape") }, enabled = state.running && !ui.busy,
+        OutlinedButton({ DesktopService.send(context, "escape") }, enabled = state.running && !state.starting && !ui.busy,
             modifier = Modifier.fillMaxWidth()) { Text("唤出全屏导航") }
         AppGrid(ui.launchableApps.ifEmpty { state.apps }, store.favorites(),
             ui.shizuku.canControl && ui.externalConnected && !ui.busy,

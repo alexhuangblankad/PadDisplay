@@ -76,7 +76,13 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
                 .put("left", rect.left).put("top", rect.top).put("right", rect.right).put("bottom", rect.bottom))
         }
         val active = current.firstOrNull()?.takeIf { component(it)?.packageName != "com.paddisplay.app" }
-        JSONObject().put("ok", true).put("tasks", array).put("activeTaskId", active?.let { number(it, "taskId") } ?: -1)
+        val surface = current.firstOrNull { component(it)?.className == "com.paddisplay.app.desktop.DesktopActivity" }
+        val surfaceBounds = surface?.let { bounds(it) }
+        JSONObject().put("ok", true).put("displayId", id)
+            .put("desktopTaskId", surface?.let { number(it, "taskId") } ?: -1)
+            .put("desktopMode", surface?.let { mode(it) } ?: -1)
+            .put("desktopWidth", surfaceBounds?.width() ?: 0).put("desktopHeight", surfaceBounds?.height() ?: 0)
+            .put("tasks", array).put("activeTaskId", active?.let { number(it, "taskId") } ?: -1)
             .put("desktopVisible", current.firstOrNull()?.let { component(it)?.className == "com.paddisplay.app.desktop.DesktopActivity" } == true).toString()
     }.getOrElse { JSONObject().put("ok", false).put("error", Reflect.describe(it)).toString() }
 
@@ -280,6 +286,9 @@ class DesktopTaskController(private val context: Context?, private val shell: (S
             "已移除自有外屏桌面任务"
         } else {
             val desktop = own.firstOrNull { component(it)?.className?.endsWith(".DesktopActivity") == true } ?: error("桌面任务尚未出现")
+            if (mode(desktop) == 1 && !bounds(desktop).isEmpty) {
+                return@result "自有桌面已是全屏，无需窗口事务；${configurationLabel(desktop)}"
+            }
             val token = Reflect.getField(desktop,"token").getOrThrow() ?: error("无桌面 token")
             val tc = Class.forName("android.window.WindowContainerTransaction")
             val wc = Class.forName("android.window.WindowContainerToken")
