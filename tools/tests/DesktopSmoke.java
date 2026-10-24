@@ -1,4 +1,5 @@
 import com.paddisplay.app.desktop.DesktopState;
+import com.paddisplay.app.desktop.DesktopLaunchEvidence;
 import com.paddisplay.app.desktop.WindowPlacement;
 import com.paddisplay.app.desktop.EscapeKeyPolicy;
 import com.paddisplay.app.desktop.DockApps;
@@ -31,6 +32,15 @@ public final class DesktopSmoke {
         require(!EscapeKeyPolicy.INSTANCE.altShiftMatches(57, 2), "standalone Alt triggers rescue");
         require(!EscapeKeyPolicy.INSTANCE.altShiftMatches(59, 1), "standalone Shift triggers rescue");
         require(!EscapeKeyPolicy.INSTANCE.altShiftMatches(59, 0x1003), "Ctrl-Alt-Shift triggers rescue");
+        String ready = "{\"ok\":true,\"displayId\":5,\"desktopVisible\":true,\"desktopTaskId\":11,\"desktopMode\":1,\"desktopWidth\":3840,\"desktopHeight\":2160}";
+        require(DesktopLaunchEvidence.INSTANCE.confirmed(ready, 5), "confirmed physical desktop rejected");
+        require(!DesktopLaunchEvidence.INSTANCE.confirmed(ready, 0), "internal display accepted");
+        require(!DesktopLaunchEvidence.INSTANCE.confirmed(ready, 7), "wrong/recycled display accepted");
+        require(!DesktopLaunchEvidence.INSTANCE.confirmed("Starting: Intent { ... }", 5), "shell launch text became success");
+        require(!DesktopLaunchEvidence.INSTANCE.confirmed("{\"ok\":false,\"error\":\"denied\"}", 5), "denied readback accepted");
+        require(!DesktopLaunchEvidence.INSTANCE.confirmed(ready.replace("\"desktopMode\":1", "\"desktopMode\":5"), 5), "small desktop became fullscreen success");
+        require(!DesktopLaunchEvidence.INSTANCE.confirmed(ready.replace("\"desktopWidth\":3840", "\"desktopWidth\":0"), 5), "empty desktop became success");
+        require(!DesktopLaunchEvidence.INSTANCE.confirmed(ready.replace("\"desktopVisible\":true", "\"desktopVisible\":false"), 5), "background desktop accepted");
         String[] placements = {"left", "right", "center", "fill", "up", "down", "moveLeft", "moveRight", "larger", "smaller"};
         Random random = new Random(19);
         for (int i = 0; i < 500; i++) {

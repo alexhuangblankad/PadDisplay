@@ -66,6 +66,57 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
     private var desktopOriginalDensity = -1
     private var desktopOriginalWindowMode: Int? = null
 
+    private var mirrorOriginal: Pair<Int, String>? = null
+    private val mirrorPreference by lazy { MirrorPreference(::execRaw) }
+
+    override fun desktopContentState(displayId: Int): String = runCatching {
+        val dm = injectedContext?.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: error("无 DisplayManager")
+        val d = dm.getDisplay(displayId) ?: error("外屏不存在")
+        require(displayId > 0 && Reflect.findMethod(d.javaClass, "getType")?.invoke(d) == 2)
+        val user = execRaw("/system/bin/am get-current-user").trim().toInt()
+        val canHost = Reflect.findMethod(d.javaClass, "canHostTasks")?.invoke(d) as? Boolean
+        val json = org.json.JSONObject().put("ok", true).put("displayId", displayId).put("userId", user)
+            .put("canHostTasks", canHost ?: org.json.JSONObject.NULL).put("flags", d.flags)
+            .put("mirror", mirrorPreference.read(user))
+        for (name in listOf("config_isDesktopModeSupported", "config_isDesktopModeDevOptionSupported")) {
+            val id = requireNotNull(injectedContext).resources.getIdentifier(name, "bool", "android")
+            json.put(name, if (id != 0) requireNotNull(injectedContext).resources.getBoolean(id) else org.json.JSONObject.NULL)
+        }
+        json.toString()
+    }.getOrElse { org.json.JSONObject().put("ok", false).put("error", Reflect.describe(it)).toString() }
+
+    @Synchronized
+    override fun prepareDesktopContentMode(displayId: Int, userId: Int, originalValue: String): String = runCatching {
+        val state = org.json.JSONObject(desktopContentState(displayId))
+        check(state.optBoolean("ok") && state.optInt("userId", -1) == userId)
+        check(displayId == desktopDisplayId && desktopLifetime != null) { "主机会话尚未登记" }
+        check(!state.isNull("canHostTasks") && !state.getBoolean("canHostTasks"))
+        check(state.getInt("flags") and (1 shl 15) != 0) { "显示器未声明内容模式切换能力" }
+        check(originalValue == "1" && state.getString("mirror") == originalValue)
+        val dm = requireNotNull(injectedContext).getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
+        val display = dm.getDisplay(displayId) ?: error("外屏已断开")
+        check(inputController.displayIdentity(display).first == desktopDisplayUniqueId) { "外屏身份已变化" }
+        check(dm.displays.count { Reflect.findMethod(it.javaClass, "getType")?.invoke(it) == 2 } == 1) { "镜像偏好影响全部外屏；多外屏时不自动修改" }
+        check(mirrorOriginal == null) { "存在待恢复的镜像偏好" }
+        mirrorOriginal = userId to originalValue
+        mirrorPreference.disable(userId, originalValue)
+        repeat(20) {
+            android.os.SystemClock.sleep(100)
+            val fresh = org.json.JSONObject(desktopContentState(displayId))
+            check(fresh.optInt("userId", -1) == userId) { "当前用户或显示状态已变化" }
+            if (fresh.optBoolean("ok") && fresh.optBoolean("canHostTasks"))
+                return@runCatching "RESULT_OK=true\n镜像偏好已关闭；canHostTasks=true（尚需桌面任务读回）"
+        }
+        error("镜像偏好已请求但外屏仍不能承载任务；系统可能限制桌面模式：${desktopContentState(displayId)}")
+    }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
+
+    @Synchronized
+    override fun restoreDesktopContentMode(userId: Int, originalValue: String): String = runCatching {
+        mirrorPreference.restore(userId, originalValue)
+        if (mirrorOriginal == (userId to originalValue)) mirrorOriginal = null
+        "RESULT_OK=true\n原镜像偏好已读回恢复"
+    }.getOrElse { "RESULT_OK=false\n${Reflect.describe(it)}" }
+
     /** Real panel brightness, independent of the external monitor's hardware backlight. */
     override fun internalBrightness(value: Float): String = runCatching {
         require(value == -1f || value.isFinite() && value in 0f..1f)
@@ -90,6 +141,11 @@ class PadDisplayUserService(private val injectedContext: Context?) : IPadDisplay
                 messages += retired
                 if (!retired.startsWith("RESULT_OK=true")) ok = false
                 val restored = restoreDesktopDisplay(desktopDisplayId)
+                messages += restored
+                if (!restored.startsWith("RESULT_OK=true")) ok = false
+            }
+            mirrorOriginal?.let { (user, original) ->
+                val restored = restoreDesktopContentMode(user, original)
                 messages += restored
                 if (!restored.startsWith("RESULT_OK=true")) ok = false
             }

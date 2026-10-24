@@ -126,6 +126,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startHostMode() {
+        if (com.paddisplay.app.desktop.DesktopState.state.value.starting) return
         if (com.paddisplay.app.desktop.DesktopState.state.value.running) {
             com.paddisplay.app.desktop.DesktopService.send(getApplication(), "home")
             return
@@ -1349,6 +1350,12 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _ui.value = _ui.value.copy(busy = true)
             val extra = mutableListOf<String>()
+            val desktop = com.paddisplay.app.desktop.DesktopState.state.value
+            extra += "--- 主机启动 / ColorOS 兼容报告 ---"
+            extra += "running=${desktop.running}; starting=${desktop.starting}; display=${desktop.displayId}"
+            extra += desktop.message
+            extra += "--- 最近前台结果 ---"
+            extra += (_ui.value.lastResult ?: "无")
             runCatching {
                 extra += "--- UserService 自检 ---"
                 extra += systemService.collectSystemInfo()

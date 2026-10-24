@@ -44,14 +44,22 @@ class InputRoutingController(
 
         /** IInputManager.aidl 解析 + 真实编译器验证（API 36）。 */
         private object Codes {
-            const val GET_INPUT_DEVICE = 2
-            const val GET_INPUT_DEVICE_IDS = 3
-            const val ADD_PORT_ASSOCIATION = 40
-            const val REMOVE_PORT_ASSOCIATION = 41
-            const val ADD_UNIQUE_ID_BY_DESCRIPTOR = 42
-            const val REMOVE_UNIQUE_ID_BY_DESCRIPTOR = 43
-            const val ADD_UNIQUE_ID_BY_PORT = 44
-            const val REMOVE_UNIQUE_ID_BY_PORT = 45
+            private fun code(name: String, api36: Int): Int {
+                val runtime = runCatching {
+                    val stub = Class.forName("android.hardware.input.IInputManager\$Stub")
+                    Reflect.findField(stub, "TRANSACTION_$name")?.getInt(null)
+                }.getOrNull()
+                return runtime ?: if (android.os.Build.VERSION.SDK_INT <= 36) api36
+                    else error("API ${android.os.Build.VERSION.SDK_INT} 无法确认 IInputManager.$name 事务号；拒绝猜用 Android 16 编号")
+            }
+            val GET_INPUT_DEVICE get() = code("getInputDevice", 2)
+            val GET_INPUT_DEVICE_IDS get() = code("getInputDeviceIds", 3)
+            val ADD_PORT_ASSOCIATION get() = code("addPortAssociation", 40)
+            val REMOVE_PORT_ASSOCIATION get() = code("removePortAssociation", 41)
+            val ADD_UNIQUE_ID_BY_DESCRIPTOR get() = code("addUniqueIdAssociationByDescriptor", 42)
+            val REMOVE_UNIQUE_ID_BY_DESCRIPTOR get() = code("removeUniqueIdAssociationByDescriptor", 43)
+            val ADD_UNIQUE_ID_BY_PORT get() = code("addUniqueIdAssociationByPort", 44)
+            val REMOVE_UNIQUE_ID_BY_PORT get() = code("removeUniqueIdAssociationByPort", 45)
         }
 
         /**

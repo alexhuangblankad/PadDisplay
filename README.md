@@ -1,4 +1,4 @@
-# PadDisplay v1.0.6
+# PadDisplay
 
 把 Android 平板的**物理外接显示器**变成桌面工作空间。面向 OPPO Pad Mini / Android 16 / ColorOS，使用 Shizuku 提供系统控制权限，无需 Root。
 
@@ -10,7 +10,11 @@
 
 *上图为模拟器 UI 夹具预览，刻意排除 Google 应用，展示桌面快捷方式与完整任务栏；不是 OPPO 物理外屏实测截图。*
 
-## v1.0.6 全屏导航
+## ColorOS 17 兼容预览
+
+[v1.1.0-rc2 预览 APK](https://github.com/alexhuangblankad/PadDisplay/releases/tag/v1.1.0-rc2)：在双启动通道基础上增加 Android 17 外屏承载任务能力探测、标准镜像偏好切换与恢复，修正独立显示成功误报。[镜像限制与验证边界](docs/android17-mirror-gate.md)。用户反馈 VoyageOS4 也未能在升级后使用；本版本没有 OPPO 真机通过证明，旧版 v1.0.6 保留为历史稳定版。[参考分析与边界](docs/voyage4-coloros17.md)。
+
+## 全屏导航
 
 鼠标在外屏底边停留两秒，或点击底边细条，临时唤出 Dock 和导航 15 秒。平板主机模式通知也提供“唤出导航”。Alt+Shift / F9 仍需启用快捷键辅助服务；串流捕获鼠标时可能收不到悬停，使用通知备用入口。用户已实测 4K 全屏成功，自由窗口仍未达成。
 

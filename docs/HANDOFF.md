@@ -1,5 +1,9 @@
 # PadDisplay 交接文档
 
+> **2026-10-24 / v1.1.0-rc2**：rc1 真机日志确认原生鼠标关联成功，但 shell/应用桌面启动均被拒绝。新增 Android 17 canHostTasks 与标准镜像偏好探测、严格条件下切换及失败/退出恢复；删除准备阶段独立显示成功误报。尚未真机验证。见 [镜像门槛与边界](android17-mirror-gate.md)。
+
+> **2026-10-24 / v1.1.0-rc1**：用户 ColorOS17 升级后 PadDisplay/VoyageOS4 都无法正常主机启动。增加 shell/普通启动双通道和实际桌面状态裁决、启动失败清理及完整诊断；API>36 输入事务号无法本机确认则拒绝猜测。保留原生输入与物理屏、简洁首页。无 OPPO 真机验证，不能宣称已兼容。见 [Voyage4 对照与兼容边界](voyage4-coloros17.md)。
+
 > v1.0.6：唤出导航按钮移至 HomePanel 首页；全屏救援统一成 EscapeNavigationActivity 全宽底栏，临时唤出时禁止重复浮层。保留真实焦点以尝试释放捕获；无 ColorOS 真机验证。
 
 > **v1.0.5 / versionCode 29**：用户真机确认 4K 全屏成功；Alt+Shift/F9 未唤出。新增外屏底边 8dp 热区悬停两秒或点击唤出，左右各留 24dp；通知增加唤出导航。

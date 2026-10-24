@@ -9,6 +9,7 @@ data class DesktopTask(val id: Int, val packageName: String, val mode: Int,
     val configuration: String = "")
 data class DesktopSnapshot(
     val running: Boolean = false, val displayId: Int = -1,
+    val starting: Boolean = false,
     val apps: List<SystemDisplayService.LaunchableApp> = emptyList(),
     val tasks: List<DesktopTask> = emptyList(), val message: String = "主机模式未启动",
     val overlayReady: Boolean = false, val favorites: Set<String> = emptySet(),
